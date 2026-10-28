@@ -1,0 +1,7 @@
+[functions.send-reminder]
+verify_jwt = false
+entrypoint = "./functions/send-reminder/index.ts"
+
+[functions.upload-logo]
+verify_jwt = false
+entrypoint = "./functions/upload-logo/index.ts"
