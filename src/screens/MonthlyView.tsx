@@ -25,6 +25,7 @@ import {
   Bell,
   Loader2,
   ListTodo,
+  Calculator,
 } from 'lucide-react';
 
 interface MonthlyViewProps {
@@ -156,6 +157,18 @@ export function MonthlyView({
             >
               <Search className="w-4 h-4" />
               <span className="hidden sm:inline">Search</span>
+            </button>
+
+            <button
+              onClick={() => {
+                const win = window.open('https://payroll-tracker-florida-4059.ai.studio/', 'payrollTracker');
+                if (win) win.focus();
+                else alert('Popup was blocked. Please allow popups for this site to open the Payroll Tracker.');
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
+            >
+              <Calculator className="w-4 h-4" />
+              <span className="hidden sm:inline">Payroll</span>
             </button>
 
             {isAdmin && (
