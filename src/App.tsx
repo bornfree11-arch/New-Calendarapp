@@ -24,6 +24,7 @@ import { ReminderStatus } from '@/screens/ReminderStatus';
 import { ResetPasswordScreen } from '@/screens/ResetPasswordScreen';
 import { TasksScreen } from '@/screens/TasksScreen';
 import { TaskDetailsModal } from '@/components/TaskDetailsModal';
+import { AppHeader } from '@/components/AppHeader';
 import { addDays, parseDateISO } from '@/lib/dateUtils';
 import { Loader2 } from 'lucide-react';
 
@@ -196,15 +197,21 @@ function AppContent() {
         </div>
       )}
 
-      {view === 'monthly' && (
-        <MonthlyView
-          onSelectDate={handleSelectDate}
+      {(view === 'monthly' || view === 'daily') && (
+        <AppHeader
           onOpenSearch={() => setModal('search')}
           onOpenUserManagement={() => setModal('userManagement')}
           onOpenCompanyManagement={() => setModal('companyManagement')}
           onOpenAuditLog={() => setModal('auditLog')}
           onOpenReminderStatus={() => setModal('reminderStatus')}
           onOpenExport={() => setModal('exportCSV')}
+          onOpenTasks={() => setView('tasks')}
+        />
+      )}
+
+      {view === 'monthly' && (
+        <MonthlyView
+          onSelectDate={handleSelectDate}
           onOpenTasks={() => setView('tasks')}
           onOpenTask={(id) => { setTaskModalId(id); setTaskModalIsNew(false); }}
           onNewTask={() => { setTaskModalId(null); setTaskModalIsNew(true); }}

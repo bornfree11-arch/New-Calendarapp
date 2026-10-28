@@ -1,12 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { useAuth } from '@/context/AuthContext';
 import { getProfiles, getAppointmentsByDate, getTasksByDate } from '@/lib/store';
 import { Appointment, Profile, AppointmentStatus, isLightColor, Task } from '@/types';
 import {
   formatDateISO,
   formatTime12,
   formatDateLong,
-  MONTH_NAMES,
 } from '@/lib/dateUtils';
 import { ColorLegend } from '@/components/ColorLegend';
 import { CATEGORY_COLORS, STATUS_COLORS } from '@/components/TaskDetailsModal';
@@ -14,7 +12,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ArrowLeft,
-  LogOut,
   Clock,
   Loader2,
   ListTodo,
@@ -50,7 +47,6 @@ export function DailyView({
   onOpenTasks,
   dataVersion,
 }: DailyViewProps) {
-  const { signOut } = useAuth();
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -146,38 +142,25 @@ export function DailyView({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-        <div className="max-w-[1200px] mx-auto px-4 h-14 flex items-center justify-between gap-4">
-          <button
-            onClick={onBackToMonthly}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">Monthly Calendar</span>
-          </button>
-          <h1 className="text-base font-semibold text-slate-800 truncate">
-            {MONTH_NAMES[date.getMonth()]} {date.getFullYear()}
-          </h1>
-          <button
-            onClick={() => signOut()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition"
-          >
-            <LogOut className="w-4 h-4" />
-            <span className="hidden sm:inline">Log Out</span>
-          </button>
-        </div>
-      </header>
-
       <div className="sticky top-14 z-10 bg-slate-50/95 backdrop-blur-sm border-b border-slate-200">
         <div className="max-w-[1200px] mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
-            <button
-              onClick={onPrevDay}
-              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
-            >
-              <ChevronLeft className="w-4 h-4" />
-              Previous Day
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onBackToMonthly}
+                className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Monthly</span>
+              </button>
+              <button
+                onClick={onPrevDay}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Previous Day</span>
+              </button>
+            </div>
             <div className="text-center">
               <div className="text-lg font-semibold text-slate-800">{formatDateLong(date)}</div>
               <div className="text-sm text-slate-500">
@@ -188,7 +171,7 @@ export function DailyView({
               onClick={onNextDay}
               className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
             >
-              Next Day
+              <span className="hidden sm:inline">Next Day</span>
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
@@ -265,7 +248,7 @@ export function DailyView({
         </div>
       </div>
 
-      <div className="fixed right-6 top-20 w-56 hidden lg:block space-y-4">
+      <div className="fixed right-6 top-32 w-56 hidden lg:block space-y-4">
         <ColorLegend profiles={profiles} />
         {tasks.length > 0 && (
           <div className="bg-white rounded-xl border border-slate-200 p-4">
