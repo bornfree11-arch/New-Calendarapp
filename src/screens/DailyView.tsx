@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { getProfiles, getAppointmentsByDate, getTasksByDate } from '@/lib/store';
-import { Appointment, Profile, AppointmentStatus, isLightColor, Task } from '@/types';
+import { getProfiles, getAppointmentsByDate, getTasksByDateRange } from '@/lib/store';
+import { Appointment, Profile, AppointmentStatus, isLightColor, Task, TaskStatus } from '@/types';
 import {
   formatDateISO,
   formatTime12,
   formatDateLong,
+  addDays,
 } from '@/lib/dateUtils';
 import { ColorLegend } from '@/components/ColorLegend';
 import { CATEGORY_COLORS, STATUS_COLORS } from '@/components/TaskDetailsModal';
@@ -14,7 +15,7 @@ import {
   ArrowLeft,
   Clock,
   Loader2,
-  ListTodo,
+  Plus,
 } from 'lucide-react';
 
 interface DailyViewProps {
@@ -25,7 +26,7 @@ interface DailyViewProps {
   onSlotClick: (date: Date, startTime: string) => void;
   onAppointmentClick: (appointment: Appointment) => void;
   onTaskClick: (taskId: string) => void;
-  onOpenTasks: () => void;
+  onAddTask: (defaultDate: Date) => void;
   dataVersion: number;
 }
 
@@ -36,6 +37,8 @@ const STATUS_BORDER: Record<AppointmentStatus, string> = {
   'No-show': 'ring-1 ring-amber-300',
 };
 
+const INCOMPLETE_STATUSES: TaskStatus[] = ['Not Started', 'In Progress', 'On Hold'];
+
 export function DailyView({
   date,
   onBackToMonthly,
@@ -44,14 +47,16 @@ export function DailyView({
   onSlotClick,
   onAppointmentClick,
   onTaskClick,
-  onOpenTasks,
+  onAddTask,
   dataVersion,
 }: DailyViewProps) {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [dailyTasks, setDailyTasks] = useState<Task[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+
 
   const loadProfiles = useCallback(async () => {
     try {
@@ -66,12 +71,14 @@ export function DailyView({
     setLoading(true);
     setError('');
     try {
+      const today = new Date();
+      const tomorrow = addDays(today, 1);
       const [a, t] = await Promise.all([
         getAppointmentsByDate(formatDateISO(date)),
-        getTasksByDate(formatDateISO(date)),
+        getTasksByDateRange(formatDateISO(today), formatDateISO(tomorrow)),
       ]);
       setAppointments(a);
-      setTasks(t);
+      setDailyTasks(t);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load appointments.');
     } finally {
@@ -87,6 +94,20 @@ export function DailyView({
     profiles.forEach(p => map.set(p.id, p));
     return map;
   }, [profiles]);
+
+  const panelTasks = useMemo(() => {
+    const today = new Date();
+    const todayISO = formatDateISO(today);
+    const tomorrowISO = formatDateISO(addDays(today, 1));
+    return dailyTasks
+      .filter(t => INCOMPLETE_STATUSES.includes(t.status) && t.due_date !== null && t.due_date <= tomorrowISO)
+      .sort((a, b) => {
+        if (a.due_date && b.due_date) return a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0;
+        if (a.due_date && !b.due_date) return -1;
+        if (!a.due_date && b.due_date) return 1;
+        return a.created_at < b.created_at ? -1 : 1;
+      });
+  }, [dailyTasks]);
 
   const timeSlots = useMemo(() => {
     const slots: { time: string; label: string }[] = [];
@@ -250,24 +271,25 @@ export function DailyView({
 
       <div className="fixed right-6 top-32 w-56 hidden lg:block space-y-4">
         <ColorLegend profiles={profiles} />
-        {tasks.length > 0 && (
-          <div className="bg-white rounded-xl border border-slate-200 p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <ListTodo className="w-4 h-4 text-teal-600" />
-                <h3 className="text-sm font-semibold text-slate-700">Tasks Due Today</h3>
-                <span className="text-xs text-slate-400">({tasks.length})</span>
-              </div>
-              <button
-                onClick={onOpenTasks}
-                className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
-              >
-                <ListTodo className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Tasks</span>
-              </button>
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-slate-700">Upcoming Tasks</h3>
+              {panelTasks.length > 0 && (
+                <span className="text-xs text-slate-400">({panelTasks.length})</span>
+              )}
             </div>
+            <button
+              onClick={() => onAddTask(date)}
+              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-teal-600 hover:bg-teal-700 rounded-lg transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Task</span>
+            </button>
+          </div>
+          {panelTasks.length > 0 ? (
             <div className="space-y-2">
-              {tasks.map(task => (
+              {panelTasks.map(task => (
                 <button
                   key={task.id}
                   onClick={() => onTaskClick(task.id)}
@@ -291,13 +313,20 @@ export function DailyView({
                       <span className={`text-[10px] px-1 py-0.5 rounded ${STATUS_COLORS[task.status]}`}>
                         {task.status}
                       </span>
+                      {task.due_date && (
+                        <span className={`text-[10px] ${task.due_date < formatDateISO(new Date()) ? 'text-red-500 font-medium' : 'text-slate-400'}`}>
+                          {task.due_date < formatDateISO(new Date()) ? 'Overdue' : task.due_date === formatDateISO(new Date()) ? 'Today' : 'Tomorrow'}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </button>
               ))}
             </div>
-          </div>
-        )}
+          ) : (
+            <p className="text-xs text-slate-400 text-center py-2">No pending tasks.</p>
+          )}
+        </div>
       </div>
     </div>
   );

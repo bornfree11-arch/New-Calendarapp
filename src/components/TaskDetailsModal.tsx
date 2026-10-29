@@ -16,6 +16,7 @@ import {
   addSubtask,
   updateSubtask,
   deleteSubtask,
+  createSubtasksBulk,
 } from '@/lib/store';
 import { formatDateLong, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import {
@@ -33,6 +34,7 @@ import {
 interface TaskDetailsModalProps {
   taskId: string | null;
   isNew: boolean;
+  defaultDueDate?: string;
   onClose: () => void;
   onChanged: () => void;
 }
@@ -53,7 +55,7 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
   'Completed': 'bg-green-100 text-green-700',
 };
 
-export function TaskDetailsModal({ taskId, isNew, onClose, onChanged }: TaskDetailsModalProps) {
+export function TaskDetailsModal({ taskId, isNew, defaultDueDate, onClose, onChanged }: TaskDetailsModalProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -67,6 +69,7 @@ export function TaskDetailsModal({ taskId, isNew, onClose, onChanged }: TaskDeta
   const [dueDate, setDueDate] = useState('');
   const [status, setStatus] = useState<TaskStatus>('Not Started');
   const [newSubtask, setNewSubtask] = useState('');
+  const [pendingSubtasks, setPendingSubtasks] = useState<{ title: string }[]>([]);
 
   const load = useCallback(async () => {
     if (isNew) {
@@ -74,9 +77,10 @@ export function TaskDetailsModal({ taskId, isNew, onClose, onChanged }: TaskDeta
       setTitle('');
       setCategory('Other');
       setNotes('');
-      setDueDate('');
+      setDueDate(defaultDueDate || '');
       setStatus('Not Started');
       setSubtasks([]);
+      setPendingSubtasks([]);
       setHistory([]);
       setLoading(false);
       return;
@@ -104,7 +108,7 @@ export function TaskDetailsModal({ taskId, isNew, onClose, onChanged }: TaskDeta
     } finally {
       setLoading(false);
     }
-  }, [taskId, isNew]);
+  }, [taskId, isNew, defaultDueDate]);
 
   useEffect(() => {
     load();
@@ -120,13 +124,16 @@ export function TaskDetailsModal({ taskId, isNew, onClose, onChanged }: TaskDeta
     try {
       const dueDateValue = dueDate || null;
       if (isNew || !task) {
-        await createTask({
+        const created = await createTask({
           title: title.trim(),
           action_category: category,
           notes: notes.trim(),
           due_date: dueDateValue,
           status,
         });
+        if (pendingSubtasks.length > 0) {
+          await createSubtasksBulk(created.id, pendingSubtasks.map(s => s.title));
+        }
       } else {
         await updateTask(task.id, {
           title: title.trim(),
@@ -162,7 +169,12 @@ export function TaskDetailsModal({ taskId, isNew, onClose, onChanged }: TaskDeta
   }
 
   async function handleAddSubtask() {
-    if (!task || !newSubtask.trim()) return;
+    if (!newSubtask.trim()) return;
+    if (isNew || !task) {
+      setPendingSubtasks(prev => [...prev, { title: newSubtask.trim() }]);
+      setNewSubtask('');
+      return;
+    }
     try {
       const st = await addSubtask(task.id, newSubtask.trim());
       setSubtasks(prev => [...prev, st]);
@@ -171,6 +183,11 @@ export function TaskDetailsModal({ taskId, isNew, onClose, onChanged }: TaskDeta
       setError(err instanceof Error ? err.message : 'Failed to add subtask.');
     }
   }
+
+  function handleDeletePendingSubtask(index: number) {
+    setPendingSubtasks(prev => prev.filter((_, i) => i !== index));
+  }
+
 
   async function handleToggleSubtask(st: Subtask) {
     try {
@@ -284,69 +301,81 @@ export function TaskDetailsModal({ taskId, isNew, onClose, onChanged }: TaskDeta
             </div>
 
             {/* Subtasks */}
-            {!isNew && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-slate-700">Subtasks</label>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-slate-700">Subtasks</label>
+                {!isNew && (
                   <span className="text-xs text-slate-400">
                     {subtasks.filter(s => s.completed).length}/{subtasks.length} done
                   </span>
-                </div>
-                <div className="space-y-1.5">
-                  {subtasks.map(st => (
-                    <div key={st.id} className="flex items-center gap-2 group">
-                      <button
-                        onClick={() => handleToggleSubtask(st)}
-                        className={`w-5 h-5 rounded border flex items-center justify-center transition shrink-0 ${
-                          st.completed
-                            ? 'bg-teal-600 border-teal-600 text-white'
-                            : 'border-slate-300 hover:border-teal-500'
-                        }`}
-                      >
-                        {st.completed && <Check className="w-3.5 h-3.5" />}
-                      </button>
-                      <input
-                        type="text"
-                        value={st.title}
-                        onChange={e => {
-                          const val = e.target.value;
-                          setSubtasks(prev => prev.map(s => (s.id === st.id ? { ...s, title: val } : s)));
-                        }}
-                        onBlur={async () => {
-                          try { await updateSubtask(st.id, { title: st.title }); } catch { /* ignore */ }
-                        }}
-                        className={`flex-1 px-2 py-1 text-sm border border-transparent rounded focus:border-slate-300 outline-none transition ${
-                          st.completed ? 'line-through text-slate-400' : 'text-slate-700'
-                        }`}
-                      />
-                      <button
-                        onClick={() => handleDeleteSubtask(st)}
-                        className="p-1 text-slate-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
-                  <div className="flex items-center gap-2 mt-2">
+                )}
+              </div>
+              <div className="space-y-1.5">
+                {!isNew && subtasks.map(st => (
+                  <div key={st.id} className="flex items-center gap-2 group">
+                    <button
+                      onClick={() => handleToggleSubtask(st)}
+                      className={`w-5 h-5 rounded border flex items-center justify-center transition shrink-0 ${
+                        st.completed
+                          ? 'bg-teal-600 border-teal-600 text-white'
+                          : 'border-slate-300 hover:border-teal-500'
+                      }`}
+                    >
+                      {st.completed && <Check className="w-3.5 h-3.5" />}
+                    </button>
                     <input
                       type="text"
-                      value={newSubtask}
-                      onChange={e => setNewSubtask(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddSubtask(); } }}
-                      placeholder="Add a subtask..."
-                      className="flex-1 px-2 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none transition"
+                      value={st.title}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setSubtasks(prev => prev.map(s => (s.id === st.id ? { ...s, title: val } : s)));
+                      }}
+                      onBlur={async () => {
+                        try { await updateSubtask(st.id, { title: st.title }); } catch { /* ignore */ }
+                      }}
+                      className={`flex-1 px-2 py-1 text-sm border border-transparent rounded focus:border-slate-300 outline-none transition ${
+                        st.completed ? 'line-through text-slate-400' : 'text-slate-700'
+                      }`}
                     />
                     <button
-                      onClick={handleAddSubtask}
-                      disabled={!newSubtask.trim()}
-                      className="p-1.5 text-teal-600 hover:bg-teal-50 rounded-lg transition disabled:opacity-40"
+                      onClick={() => handleDeleteSubtask(st)}
+                      className="p-1 text-slate-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100"
                     >
-                      <Plus className="w-4 h-4" />
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
+                ))}
+                {isNew && pendingSubtasks.map((st, index) => (
+                  <div key={index} className="flex items-center gap-2 group">
+                    <div className="w-5 h-5 rounded border border-slate-300 shrink-0" />
+                    <span className="flex-1 px-2 py-1 text-sm text-slate-700">{st.title}</span>
+                    <button
+                      onClick={() => handleDeletePendingSubtask(index)}
+                      className="p-1 text-slate-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+                <div className="flex items-center gap-2 mt-2">
+                  <input
+                    type="text"
+                    value={newSubtask}
+                    onChange={e => setNewSubtask(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddSubtask(); } }}
+                    placeholder="Add a subtask..."
+                    className="flex-1 px-2 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none transition"
+                  />
+                  <button
+                    onClick={handleAddSubtask}
+                    disabled={!newSubtask.trim()}
+                    className="p-1.5 text-teal-600 hover:bg-teal-50 rounded-lg transition disabled:opacity-40"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
-            )}
+            </div>
 
             {/* Status history */}
             {!isNew && history.length > 0 && (

@@ -148,6 +148,7 @@ export function TasksScreen({ onBackToCalendar, onSignOut }: TasksScreenProps) {
         <TaskDetailsModal
           taskId={modalTaskId}
           isNew={modalIsNew}
+          defaultDueDate={modalIsNew ? formatDateISO(new Date()) : undefined}
           onClose={() => { setModalTaskId(null); setModalIsNew(false); }}
           onChanged={() => setDataVersion(v => v + 1)}
         />

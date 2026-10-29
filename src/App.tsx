@@ -25,7 +25,7 @@ import { ResetPasswordScreen } from '@/screens/ResetPasswordScreen';
 import { TasksScreen } from '@/screens/TasksScreen';
 import { TaskDetailsModal } from '@/components/TaskDetailsModal';
 import { AppHeader } from '@/components/AppHeader';
-import { addDays, parseDateISO } from '@/lib/dateUtils';
+import { addDays, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import { Loader2 } from 'lucide-react';
 
 type View = 'monthly' | 'daily' | 'tasks';
@@ -54,6 +54,7 @@ function AppContent() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [taskModalId, setTaskModalId] = useState<string | null>(null);
   const [taskModalIsNew, setTaskModalIsNew] = useState(false);
+  const [taskModalDefaultDueDate, setTaskModalDefaultDueDate] = useState<string | undefined>(undefined);
 
   const loadReferenceData = useCallback(async () => {
     try {
@@ -214,7 +215,7 @@ function AppContent() {
           onSelectDate={handleSelectDate}
           onOpenTasks={() => setView('tasks')}
           onOpenTask={(id) => { setTaskModalId(id); setTaskModalIsNew(false); }}
-          onNewTask={() => { setTaskModalId(null); setTaskModalIsNew(true); }}
+          onNewTask={() => { setTaskModalDefaultDueDate(formatDateISO(new Date())); setTaskModalId(null); setTaskModalIsNew(true); }}
           dataVersion={dataVersion}
         />
       )}
@@ -235,7 +236,7 @@ function AppContent() {
           onSlotClick={handleSlotClick}
           onAppointmentClick={handleAppointmentClick}
           onTaskClick={(id) => { setTaskModalId(id); setTaskModalIsNew(false); }}
-          onOpenTasks={() => setView('tasks')}
+          onAddTask={(defaultDate) => { setTaskModalDefaultDueDate(formatDateISO(defaultDate)); setTaskModalId(null); setTaskModalIsNew(true); }}
           dataVersion={dataVersion}
         />
       )}
@@ -306,7 +307,8 @@ function AppContent() {
         <TaskDetailsModal
           taskId={taskModalId}
           isNew={taskModalIsNew}
-          onClose={() => { setTaskModalId(null); setTaskModalIsNew(false); }}
+          defaultDueDate={taskModalDefaultDueDate}
+          onClose={() => { setTaskModalId(null); setTaskModalIsNew(false); setTaskModalDefaultDueDate(undefined); }}
           onChanged={() => setDataVersion(v => v + 1)}
         />
       )}

@@ -394,6 +394,17 @@ export async function addSubtask(taskId: string, title: string): Promise<Subtask
   return data;
 }
 
+export async function createSubtasksBulk(taskId: string, titles: string[]): Promise<Subtask[]> {
+  if (titles.length === 0) return [];
+  const rows = titles.map(title => ({ task_id: taskId, title }));
+  const { data, error } = await supabase
+    .from('subtasks')
+    .insert(rows)
+    .select('*');
+  if (error) throw error;
+  return (data || []) as Subtask[];
+}
+
 export async function updateSubtask(id: string, updates: Partial<Pick<Subtask, 'title' | 'completed'>>): Promise<Subtask> {
   const { data, error } = await supabase
     .from('subtasks')
