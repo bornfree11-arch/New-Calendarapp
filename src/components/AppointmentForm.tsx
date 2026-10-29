@@ -310,7 +310,7 @@ export function AppointmentForm({
                   company_snapshot: savedAppt.company_snapshot,
                 },
                 profile: assignedProfile
-                  ? { full_name: assignedProfile.full_name, email: assignedProfile.email }
+                  ? { full_name: assignedProfile.full_name, email: assignedProfile.email, phone: assignedProfile.phone }
                   : null,
               }),
             });

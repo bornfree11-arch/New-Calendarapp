@@ -112,7 +112,7 @@ export function AppointmentDetails({
             company_snapshot: appointment.company_snapshot,
           },
           profile: profile
-            ? { full_name: profile.full_name, email: profile.email }
+            ? { full_name: profile.full_name, email: profile.email, phone: profile.phone }
             : null,
         }),
       });

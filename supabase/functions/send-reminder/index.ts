@@ -51,6 +51,7 @@ interface AppointmentRow {
 interface ProfileRow {
   full_name: string;
   email: string;
+  phone: string | null;
 }
 
 function formatTime(timeStr: string): string {
@@ -99,10 +100,27 @@ function isBillingOrRestrictionError(error: string): boolean {
   );
 }
 
-// Build the dynamic template variables for the client SMS
+// Build the dynamic template variables for the client WhatsApp message
 function buildClientSMS(appt: AppointmentRow, profile: ProfileRow) {
+  const firstName = (appt.client_name || "Client").split(" ")[0];
+
+  const company = appt.company_snapshot;
+  const companyName = company?.name || "";
+
+  const addressParts = [
+    company?.address_line1,
+    company?.address_line2,
+    [company?.city, company?.state, company?.zip_code].filter(Boolean).join(" "),
+  ].filter(Boolean);
+  const companyAddress = addressParts.join(", ");
+
+  const callbackNumber = profile.phone || "";
+
   return {
-    clientName: appt.client_name || "Client",
+    firstName,
+    companyName,
+    companyAddress,
+    callbackNumber,
     appointmentDate: formatDateShort(appt.appointment_date),
     appointmentTime: formatTime(appt.start_time),
   };
@@ -138,9 +156,12 @@ async function sendBirdSMS(toPhone: string, templateData: any, birdApiKey: strin
             {
               type: "body",
               parameters: [
-                { type: "text", name: "first_name", text: templateData.clientName || "Client" },
+                { type: "text", name: "first_name", text: templateData.firstName },
                 { type: "text", name: "appointment_date", text: templateData.appointmentDate },
-                { type: "text", name: "appointment_time", text: templateData.appointmentTime }
+                { type: "text", name: "appointment_time", text: templateData.appointmentTime },
+                { type: "text", name: "company_name", text: templateData.companyName },
+                { type: "text", name: "company_address", text: templateData.companyAddress },
+                { type: "text", name: "callback_number", text: templateData.callbackNumber }
               ]
             }
           ]
@@ -540,6 +561,16 @@ Deno.serve(async (req: Request) => {
           );
         }
         const smsMessage = buildClientSMS(appt, profile);
+        if (!smsMessage.callbackNumber) {
+          return new Response(
+            JSON.stringify({
+              status: "failed",
+              channel: "sms",
+              error: "The coworker assigned to this appointment does not have a phone number on file. A callback number is required to send the WhatsApp confirmation.",
+            }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
         const result = await sendBirdSMS(body.recipient_address, smsMessage, birdApiKey);
 
         if (result.success) {
@@ -631,7 +662,7 @@ Deno.serve(async (req: Request) => {
       // Fetch coworker profile
       const { data: profile } = await supabase
         .from("profiles")
-        .select("full_name, email")
+        .select("full_name, email, phone")
         .eq("id", appt.assigned_to)
         .maybeSingle<ProfileRow>();
 

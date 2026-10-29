@@ -1,0 +1,13 @@
+{
+  "projectId": "72447426",
+  "functions": {
+    "send-reminder": {
+      "hasChanged": false,
+      "hash": "add0c9d0b46c3bf542e3f64699f8d4e65f4c688f8c852dbb3e58a1726f65d584"
+    },
+    "upload-logo": {
+      "hasChanged": false,
+      "hash": "d995bc88d477620e645d8ce5d8ae3f8d834018111c8aefe0555f37c6452590a4"
+    }
+  }
+}
