@@ -1,11 +1,13 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { getProfiles, getAppointmentsByDate, getTasksByDateRange } from '@/lib/store';
+import { getProfiles, getAppointmentsByDate, getTasks } from '@/lib/store';
 import { Appointment, Profile, AppointmentStatus, isLightColor, Task, TaskStatus } from '@/types';
 import {
   formatDateISO,
   formatTime12,
   formatDateLong,
+  formatDateMedium,
   addDays,
+  parseDateISO,
 } from '@/lib/dateUtils';
 import { ColorLegend } from '@/components/ColorLegend';
 import { CATEGORY_COLORS, STATUS_COLORS } from '@/components/TaskDetailsModal';
@@ -71,11 +73,9 @@ export function DailyView({
     setLoading(true);
     setError('');
     try {
-      const today = new Date();
-      const tomorrow = addDays(today, 1);
       const [a, t] = await Promise.all([
         getAppointmentsByDate(formatDateISO(date)),
-        getTasksByDateRange(formatDateISO(today), formatDateISO(tomorrow)),
+        getTasks(),
       ]);
       setAppointments(a);
       setDailyTasks(t);
@@ -95,19 +95,40 @@ export function DailyView({
     return map;
   }, [profiles]);
 
-  const panelTasks = useMemo(() => {
-    const today = new Date();
-    const todayISO = formatDateISO(today);
-    const tomorrowISO = formatDateISO(addDays(today, 1));
-    return dailyTasks
-      .filter(t => INCOMPLETE_STATUSES.includes(t.status) && t.due_date !== null && t.due_date <= tomorrowISO)
-      .sort((a, b) => {
-        if (a.due_date && b.due_date) return a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0;
-        if (a.due_date && !b.due_date) return -1;
-        if (!a.due_date && b.due_date) return 1;
-        return a.created_at < b.created_at ? -1 : 1;
-      });
-  }, [dailyTasks]);
+  const selectedISO = formatDateISO(date);
+  const realTodayISO = formatDateISO(new Date());
+  const tomorrowOfSelectedISO = formatDateISO(addDays(date, 1));
+
+  const incompleteTasks = useMemo(
+    () => dailyTasks.filter(t => INCOMPLETE_STATUSES.includes(t.status) && t.due_date !== null),
+    [dailyTasks]
+  );
+
+  const sortByDueDate = (a: Task, b: Task) =>
+    (a.due_date || '') < (b.due_date || '') ? -1 : (a.due_date || '') > (b.due_date || '') ? 1 : 0;
+
+  const pastDueTasks = useMemo(
+    () => incompleteTasks
+      .filter(t => (t.due_date || '') < realTodayISO)
+      .sort(sortByDueDate),
+    [incompleteTasks, realTodayISO]
+  );
+
+  const todayTasks = useMemo(
+    () => incompleteTasks
+      .filter(t => (t.due_date || '') === selectedISO)
+      .sort(sortByDueDate),
+    [incompleteTasks, selectedISO]
+  );
+
+  const tomorrowTasks = useMemo(
+    () => incompleteTasks
+      .filter(t => (t.due_date || '') === tomorrowOfSelectedISO)
+      .sort(sortByDueDate),
+    [incompleteTasks, tomorrowOfSelectedISO]
+  );
+
+  const hasAnyTask = pastDueTasks.length > 0 || todayTasks.length > 0 || tomorrowTasks.length > 0;
 
   const timeSlots = useMemo(() => {
     const slots: { time: string; label: string }[] = [];
@@ -274,9 +295,9 @@ export function DailyView({
         <div className="bg-white rounded-xl border border-slate-200 p-4">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-slate-700">Upcoming Tasks</h3>
-              {panelTasks.length > 0 && (
-                <span className="text-xs text-slate-400">({panelTasks.length})</span>
+              <h3 className="text-sm font-semibold text-slate-700">Tasks</h3>
+              {hasAnyTask && (
+                <span className="text-xs text-slate-400">({pastDueTasks.length + todayTasks.length + tomorrowTasks.length})</span>
               )}
             </div>
             <button
@@ -287,48 +308,89 @@ export function DailyView({
               <span>Add Task</span>
             </button>
           </div>
-          {panelTasks.length > 0 ? (
-            <div className="space-y-2">
-              {panelTasks.map(task => (
-                <button
-                  key={task.id}
-                  onClick={() => onTaskClick(task.id)}
-                  className="w-full bg-white rounded-lg border border-slate-200 hover:border-teal-300 hover:shadow-sm transition p-2 text-left flex items-center gap-2"
-                >
-                  <div className={`w-2 h-2 rounded-full shrink-0 ${
-                    task.status === 'Completed' ? 'bg-green-500' :
-                    task.status === 'In Progress' ? 'bg-blue-500' :
-                    task.status === 'On Hold' ? 'bg-amber-500' :
-                    task.status === 'Cancelled' ? 'bg-red-400' :
-                    'bg-slate-300'
-                  }`} />
-                  <div className="flex-1 min-w-0">
-                    <span className={`text-xs font-medium block truncate ${task.status === 'Completed' ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                      {task.title}
-                    </span>
-                    <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                      <span className={`text-[10px] px-1 py-0.5 rounded ${CATEGORY_COLORS[task.action_category]}`}>
-                        {task.action_category}
-                      </span>
-                      <span className={`text-[10px] px-1 py-0.5 rounded ${STATUS_COLORS[task.status]}`}>
-                        {task.status}
-                      </span>
-                      {task.due_date && (
-                        <span className={`text-[10px] ${task.due_date < formatDateISO(new Date()) ? 'text-red-500 font-medium' : 'text-slate-400'}`}>
-                          {task.due_date < formatDateISO(new Date()) ? 'Overdue' : task.due_date === formatDateISO(new Date()) ? 'Today' : 'Tomorrow'}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </button>
-              ))}
+
+          {pastDueTasks.length > 0 && (
+            <div className="mb-3">
+              <h4 className="text-xs font-semibold text-red-600 mb-1.5 uppercase tracking-wide">Past Due</h4>
+              <div className="space-y-2">
+                {pastDueTasks.map(task => (
+                  <TaskPanelItem key={task.id} task={task} overdue onTaskClick={onTaskClick} />
+                ))}
+              </div>
             </div>
-          ) : (
+          )}
+
+          {todayTasks.length > 0 && (
+            <div className="mb-3">
+              <h4 className="text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Today</h4>
+              <div className="space-y-2">
+                {todayTasks.map(task => (
+                  <TaskPanelItem key={task.id} task={task} onTaskClick={onTaskClick} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {tomorrowTasks.length > 0 && (
+            <div className="mb-3">
+              <h4 className="text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Tomorrow</h4>
+              <div className="space-y-2">
+                {tomorrowTasks.map(task => (
+                  <TaskPanelItem key={task.id} task={task} onTaskClick={onTaskClick} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!hasAnyTask && (
             <p className="text-xs text-slate-400 text-center py-2">No pending tasks.</p>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+interface TaskPanelItemProps {
+  task: Task;
+  overdue?: boolean;
+  onTaskClick: (taskId: string) => void;
+}
+
+function TaskPanelItem({ task, overdue, onTaskClick }: TaskPanelItemProps) {
+  const titleColor = overdue ? 'text-red-600' : 'text-slate-800';
+  const dateColor = overdue ? 'text-red-500 font-medium' : 'text-slate-400';
+  const dueDateLabel = task.due_date ? formatDateMedium(parseDateISO(task.due_date)) : '';
+
+  return (
+    <button
+      onClick={() => onTaskClick(task.id)}
+      className="w-full bg-white rounded-lg border border-slate-200 hover:border-teal-300 hover:shadow-sm transition p-2 text-left flex items-center gap-2"
+    >
+      <div className={`w-2 h-2 rounded-full shrink-0 ${
+        task.status === 'In Progress' ? 'bg-blue-500' :
+        task.status === 'On Hold' ? 'bg-amber-500' :
+        'bg-slate-300'
+      }`} />
+      <div className="flex-1 min-w-0">
+        <span className={`text-xs font-medium block truncate ${titleColor}`}>
+          {task.title}
+        </span>
+        <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+          <span className={`text-[10px] px-1 py-0.5 rounded ${CATEGORY_COLORS[task.action_category]}`}>
+            {task.action_category}
+          </span>
+          <span className={`text-[10px] px-1 py-0.5 rounded ${STATUS_COLORS[task.status]}`}>
+            {task.status}
+          </span>
+          {dueDateLabel && (
+            <span className={`text-[10px] ${dateColor}`}>
+              {dueDateLabel}
+            </span>
+          )}
+        </div>
+      </div>
+    </button>
   );
 }
 
