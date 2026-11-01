@@ -290,7 +290,7 @@ export function DailyView({
         </div>
       </div>
 
-      <div className="fixed right-6 top-32 w-80 hidden lg:block flex flex-col gap-4" style={{ maxHeight: 'calc(100vh - 144px)' }}>
+      <div className="fixed right-6 top-32 w-80 hidden lg:flex flex-col gap-4" style={{ maxHeight: 'calc(100dvh - 152px)' }}>
         <ColorLegend profiles={profiles} />
         <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col flex-1 min-h-0">
           <div className="flex items-center justify-between mb-3 shrink-0">
