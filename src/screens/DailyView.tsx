@@ -227,7 +227,7 @@ export function DailyView({
           </div>
         )}
 
-        <div className="lg:mr-64">
+        <div className="lg:mr-[376px]">
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           {loading ? (
             <div className="text-center py-12 text-slate-400 flex items-center justify-center gap-2">
@@ -290,10 +290,10 @@ export function DailyView({
         </div>
       </div>
 
-      <div className="fixed right-6 top-32 w-56 hidden lg:block space-y-4">
+      <div className="fixed right-6 top-32 w-80 hidden lg:block space-y-4">
         <ColorLegend profiles={profiles} />
         <div className="bg-white rounded-xl border border-slate-200 p-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3 shrink-0">
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-semibold text-slate-700">Tasks</h3>
               {hasAnyTask && (
@@ -309,6 +309,7 @@ export function DailyView({
             </button>
           </div>
 
+          <div className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
           {pastDueTasks.length > 0 && (
             <div className="mb-3">
               <h4 className="text-xs font-semibold text-red-600 mb-1.5 uppercase tracking-wide">Past Due</h4>
@@ -345,6 +346,7 @@ export function DailyView({
           {!hasAnyTask && (
             <p className="text-xs text-slate-400 text-center py-2">No pending tasks.</p>
           )}
+          </div>
         </div>
       </div>
     </div>
