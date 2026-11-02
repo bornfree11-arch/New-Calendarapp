@@ -40,7 +40,7 @@ export function CompactTaskList({ onOpenTask, onOpenTasksScreen, onNewTask, data
       if (a.due_date && !b.due_date) return -1;
       if (!a.due_date && b.due_date) return 1;
       return 0;
-    }).slice(0, 6);
+    });
   }, [tasks, showCompleted]);
 
   const incompleteCount = tasks.filter(t => t.status !== 'Completed' && t.status !== 'Cancelled').length;
@@ -74,7 +74,7 @@ export function CompactTaskList({ onOpenTask, onOpenTasksScreen, onNewTask, data
           {showCompleted ? 'No completed tasks.' : 'No open tasks. Nice work!'}
         </div>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-1.5 overflow-y-auto" style={{ maxHeight: '400px' }}>
           {visible.map(task => {
             const overdue = task.due_date && task.status !== 'Completed' && task.status !== 'Cancelled' &&
               new Date(task.due_date) < new Date(new Date().toDateString());
