@@ -156,10 +156,10 @@ async function sendBirdSMS(toPhone: string, templateData: any, birdApiKey: strin
             {
               type: "body",
               parameters: [
+                { type: "text", name: "company_name", text: templateData.companyName },
                 { type: "text", name: "first_name", text: templateData.firstName },
                 { type: "text", name: "appointment_date", text: templateData.appointmentDate },
                 { type: "text", name: "appointment_time", text: templateData.appointmentTime },
-                { type: "text", name: "company_name", text: templateData.companyName },
                 { type: "text", name: "company_address", text: templateData.companyAddress },
                 { type: "text", name: "callback_number", text: templateData.callbackNumber }
               ]
