@@ -150,7 +150,7 @@ async function sendBirdSMS(toPhone: string, templateData: any, birdApiKey: strin
         from: normalizedFrom,
         to: formattedTo,
         template: {
-          slug: "appointment_reminder_redirect",
+          slug: "appointment_confirmation",
           language: "en",
           components: [
             {
