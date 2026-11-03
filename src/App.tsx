@@ -59,6 +59,7 @@ function AppContent() {
   const [taskModalIsNew, setTaskModalIsNew] = useState(false);
   const [taskModalDefaultDueDate, setTaskModalDefaultDueDate] = useState<string | undefined>(undefined);
   const [messageFailureCount, setMessageFailureCount] = useState(0);
+  const [focusOpen, setFocusOpen] = useState(false);
 
   const loadReferenceData = useCallback(async () => {
     try {
@@ -264,6 +265,7 @@ function AppContent() {
         <TasksScreen
           onBackToCalendar={() => setView('monthly')}
           onSignOut={() => signOut()}
+          onOpenFocus={() => setFocusOpen(true)}
         />
       )}
 
@@ -356,17 +358,18 @@ function AppContent() {
           onChanged={() => setDataVersion(v => v + 1)}
         />
       )}
+
+      {focusOpen && (
+        <FocusModeWindow onClose={() => setFocusOpen(false)} />
+      )}
     </>
   );
 }
 
 function App() {
-  const isFocusWindow =
-    new URLSearchParams(window.location.search).get('view') === 'focus';
-
   return (
     <AuthProvider>
-      {isFocusWindow ? <FocusModeWindow /> : <AppContent />}
+      <AppContent />
     </AuthProvider>
   );
 }

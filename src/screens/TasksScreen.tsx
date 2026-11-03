@@ -20,11 +20,12 @@ import {
 interface TasksScreenProps {
   onBackToCalendar: () => void;
   onSignOut: () => void;
+  onOpenFocus: () => void;
 }
 
 type StatusFilter = 'all' | TaskStatus;
 
-export function TasksScreen({ onBackToCalendar, onSignOut }: TasksScreenProps) {
+export function TasksScreen({ onBackToCalendar, onSignOut, onOpenFocus }: TasksScreenProps) {
   const { profile } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,8 +80,7 @@ export function TasksScreen({ onBackToCalendar, onSignOut }: TasksScreenProps) {
   }
 
   function openFocus() {
-    const url = `${window.location.origin}${window.location.pathname}?view=focus`;
-    window.open(url, 'focus-mode', 'width=560,height=760,resizable,scrollbars=yes');
+    onOpenFocus();
   }
 
   return (

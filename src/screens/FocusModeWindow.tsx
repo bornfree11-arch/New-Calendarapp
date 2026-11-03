@@ -13,6 +13,7 @@ import {
   X,
   AlertCircle,
   Timer,
+  Minimize2,
 } from 'lucide-react';
 
 interface FocusTask {
@@ -39,8 +40,12 @@ function formatDuration(totalMinutes: number): string {
   return `${h}h ${m}m`;
 }
 
-export function FocusModeWindow() {
-  const { profile, signOut } = useAuth();
+interface FocusModeWindowProps {
+  onClose: () => void;
+}
+
+export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
+  const { profile } = useAuth();
   const [focusTasks, setFocusTasks] = useState<FocusTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -49,12 +54,12 @@ export function FocusModeWindow() {
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   const loadTasks = useCallback(async () => {
+    if (!profile) return;
     setLoading(true);
     setError('');
     try {
       const allTasks = await getTasks();
       const eligible = allTasks.filter(isEligible);
-      // Sort by due date ascending, then by created_at
       eligible.sort((a, b) => {
         if (a.due_date && b.due_date) return a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0;
         return a.created_at < b.created_at ? -1 : 1;
@@ -65,7 +70,7 @@ export function FocusModeWindow() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [profile]);
 
   useEffect(() => {
     loadTasks();
@@ -93,8 +98,6 @@ export function FocusModeWindow() {
   function removeTask(index: number) {
     setFocusTasks(prev => prev.filter((_, i) => i !== index));
   }
-
-  // --- Drag and drop handlers ---
 
   function handleDragStart(index: number) {
     dragIndexRef.current = index;
@@ -138,107 +141,122 @@ export function FocusModeWindow() {
   }, [focusTasks]);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-        <div className="px-4 h-14 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <Timer className="w-5 h-5 text-teal-600 shrink-0" />
-            <h1 className="text-base font-semibold text-slate-800 truncate">Focus Mode</h1>
-          </div>
-          <button
-            onClick={() => signOut()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition shrink-0"
-          >
-            <X className="w-4 h-4" />
-            <span className="hidden sm:inline">Close</span>
-          </button>
-        </div>
-      </header>
-
-      <div className="flex-1 px-4 py-4 max-w-[640px] w-full mx-auto">
-        {error && (
-          <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
-            {error}
-          </div>
-        )}
-
-        {/* Combined duration banner */}
-        <div className="bg-gradient-to-r from-teal-600 to-teal-700 rounded-2xl px-6 py-5 mb-4 shadow-sm">
-          <div className="flex items-center gap-2 text-teal-100 text-xs font-medium uppercase tracking-wide mb-1">
-            <Clock className="w-3.5 h-3.5" />
-            Total Estimated Time
-          </div>
-          <div className="text-3xl font-bold text-white">
-            {formatDuration(totalMinutes)}
-          </div>
-          <div className="text-teal-200 text-sm mt-1">
-            {focusTasks.length} task{focusTasks.length !== 1 ? 's' : ''}
-            {overdueCount > 0 && ` · ${overdueCount} overdue`}
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center py-12 text-slate-400">
-            <Loader2 className="w-6 h-6 animate-spin" />
-          </div>
-        ) : focusTasks.length === 0 ? (
-          <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
-            <Timer className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-            <p className="text-slate-500 text-sm">
-              No tasks are due today or overdue. You're all caught up!
-            </p>
-          </div>
-        ) : (
-          <>
-            {/* Task list */}
-            <div className="space-y-2 mb-4">
-              {focusTasks.map((ft, index) => (
-                <TaskDragRow
-                  key={ft.task.id}
-                  focusTask={ft}
-                  index={index}
-                  isDragOver={dragOverIndex === index}
-                  onDragStart={handleDragStart}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  onDragEnd={handleDragEnd}
-                  onHoursChange={updateHours}
-                  onMinutesChange={updateMinutes}
-                  onRemove={removeTask}
-                />
-              ))}
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-slate-50 rounded-2xl shadow-2xl w-full max-w-[640px] max-h-[90vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="bg-white border-b border-slate-200 sticky top-0 z-10 rounded-t-2xl">
+          <div className="px-5 h-14 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <Timer className="w-5 h-5 text-teal-600 shrink-0" />
+              <h2 className="text-base font-semibold text-slate-800 truncate">Focus Mode</h2>
             </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={onClose}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
+                title="Minimize — return to calendar"
+              >
+                <Minimize2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Minimize</span>
+              </button>
+              <button
+                onClick={onClose}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        </div>
 
-            {/* Start button */}
-            <button
-              onClick={handleStart}
-              disabled={!allValid}
-              className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold rounded-xl transition shadow-sm ${
-                allValid
-                  ? 'bg-teal-600 text-white hover:bg-teal-700'
-                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-              }`}
-            >
-              <Play className="w-4 h-4" />
-              Start Focus Session
-            </button>
+        <div className="px-5 py-4">
+          {error && (
+            <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+              {error}
+            </div>
+          )}
 
-            {!allValid && focusTasks.length > 0 && (
-              <p className="text-xs text-slate-400 text-center mt-2">
-                Set a duration greater than zero for every task to enable Start.
+          {/* Combined duration banner */}
+          <div className="bg-gradient-to-r from-teal-600 to-teal-700 rounded-2xl px-6 py-5 mb-4 shadow-sm">
+            <div className="flex items-center gap-2 text-teal-100 text-xs font-medium uppercase tracking-wide mb-1">
+              <Clock className="w-3.5 h-3.5" />
+              Total Estimated Time
+            </div>
+            <div className="text-3xl font-bold text-white">
+              {formatDuration(totalMinutes)}
+            </div>
+            <div className="text-teal-200 text-sm mt-1">
+              {focusTasks.length} task{focusTasks.length !== 1 ? 's' : ''}
+              {overdueCount > 0 && ` · ${overdueCount} overdue`}
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-slate-400">
+              <Loader2 className="w-6 h-6 animate-spin" />
+            </div>
+          ) : focusTasks.length === 0 ? (
+            <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
+              <Timer className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+              <p className="text-slate-500 text-sm">
+                No tasks are due today or overdue. You're all caught up!
               </p>
-            )}
-
-            {startMessage && (
-              <div className="mt-3 flex items-start gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                <span>{startMessage}</span>
+            </div>
+          ) : (
+            <>
+              {/* Task list */}
+              <div className="space-y-2 mb-4">
+                {focusTasks.map((ft, index) => (
+                  <TaskDragRow
+                    key={ft.task.id}
+                    focusTask={ft}
+                    index={index}
+                    isDragOver={dragOverIndex === index}
+                    onDragStart={handleDragStart}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onDragEnd={handleDragEnd}
+                    onHoursChange={updateHours}
+                    onMinutesChange={updateMinutes}
+                    onRemove={removeTask}
+                  />
+                ))}
               </div>
-            )}
-          </>
-        )}
+
+              {/* Start button */}
+              <button
+                onClick={handleStart}
+                disabled={!allValid}
+                className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold rounded-xl transition shadow-sm ${
+                  allValid
+                    ? 'bg-teal-600 text-white hover:bg-teal-700'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                <Play className="w-4 h-4" />
+                Start Focus Session
+              </button>
+
+              {!allValid && focusTasks.length > 0 && (
+                <p className="text-xs text-slate-400 text-center mt-2">
+                  Set a duration greater than zero for every task to enable Start.
+                </p>
+              )}
+
+              {startMessage && (
+                <div className="mt-3 flex items-start gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                  <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <span>{startMessage}</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
