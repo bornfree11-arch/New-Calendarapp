@@ -3,11 +3,15 @@
   "functions": {
     "send-reminder": {
       "hasChanged": false,
-      "hash": "f656289c4f565be9874b5c35b483b054847150b106b0f5a70406d5d467c7fecd"
+      "hash": "6e0a68f06fdf6ddfd1e70b9065b7e6107ae69d6df2a41bddb02df6c6ab76da8a"
     },
     "upload-logo": {
       "hasChanged": false,
       "hash": "d995bc88d477620e645d8ce5d8ae3f8d834018111c8aefe0555f37c6452590a4"
+    },
+    "bird-webhook": {
+      "hasChanged": false,
+      "hash": "217b2ba963528a54ea3ea4324b964ff4b51d24e1f472c2af46a362084c3edb06"
     }
   }
 }

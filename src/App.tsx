@@ -8,6 +8,7 @@ import {
   deleteAppointment as storeDeleteAppointment,
 } from '@/lib/store';
 import { Appointment, Profile, Company, AppointmentTypeMapping } from '@/types';
+import { getUnacknowledgedFailureCount } from '@/lib/store';
 import { SetupScreen } from '@/screens/SetupScreen';
 import { LoginScreen } from '@/screens/LoginScreen';
 import { MonthlyView } from '@/screens/MonthlyView';
@@ -24,12 +25,13 @@ import { ReminderStatus } from '@/screens/ReminderStatus';
 import { ResetPasswordScreen } from '@/screens/ResetPasswordScreen';
 import { TasksScreen } from '@/screens/TasksScreen';
 import { TaskDetailsModal } from '@/components/TaskDetailsModal';
+import { MessageStatusCenter } from '@/screens/MessageStatusCenter';
 import { AppHeader } from '@/components/AppHeader';
 import { addDays, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import { Loader2 } from 'lucide-react';
 
 type View = 'monthly' | 'daily' | 'tasks';
-type Modal = 'search' | 'userManagement' | 'companyManagement' | 'auditLog' | 'exportCSV' | 'reminderStatus' | 'taskDetails' | null;
+type Modal = 'search' | 'userManagement' | 'companyManagement' | 'auditLog' | 'exportCSV' | 'reminderStatus' | 'taskDetails' | 'messageStatus' | null;
 
 function AppContent() {
   const { profile, loading, passwordRecovery, clearPasswordRecovery, signOut } = useAuth();
@@ -55,6 +57,7 @@ function AppContent() {
   const [taskModalId, setTaskModalId] = useState<string | null>(null);
   const [taskModalIsNew, setTaskModalIsNew] = useState(false);
   const [taskModalDefaultDueDate, setTaskModalDefaultDueDate] = useState<string | undefined>(undefined);
+  const [messageFailureCount, setMessageFailureCount] = useState(0);
 
   const loadReferenceData = useCallback(async () => {
     try {
@@ -80,6 +83,40 @@ function AppContent() {
     setNeedsSetup(false);
     loadReferenceData();
   }, [profile, dataVersion, loadReferenceData]);
+
+  // Load unacknowledged failure count and subscribe to realtime changes
+  useEffect(() => {
+    if (!profile) return;
+
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    async function loadCount() {
+      try {
+        const count = await getUnacknowledgedFailureCount();
+        setMessageFailureCount(count);
+      } catch {
+        // Best-effort — don't surface errors for the indicator
+      }
+    }
+
+    loadCount();
+
+    channel = supabase
+      .channel('delivery-alerts-changes')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_alerts' },
+        () => { loadCount(); }
+      )
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'reminder_attempts' },
+        () => { loadCount(); }
+      )
+      .subscribe();
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [profile]);
 
   // Check if an admin already exists before showing onboarding
   useEffect(() => {
@@ -207,6 +244,8 @@ function AppContent() {
           onOpenReminderStatus={() => setModal('reminderStatus')}
           onOpenExport={() => setModal('exportCSV')}
           onOpenTasks={() => setView('tasks')}
+          onOpenMessageStatus={() => setModal('messageStatus')}
+          messageFailureCount={messageFailureCount}
         />
       )}
 
@@ -301,6 +340,10 @@ function AppContent() {
 
       {modal === 'reminderStatus' && profile.role === 'admin' && (
         <ReminderStatus onClose={() => setModal(null)} />
+      )}
+
+      {modal === 'messageStatus' && profile.role === 'admin' && (
+        <MessageStatusCenter onClose={() => setModal(null)} />
       )}
 
       {(taskModalIsNew || taskModalId) && (

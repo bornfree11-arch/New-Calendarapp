@@ -109,6 +109,59 @@ export const TASK_STATUSES: TaskStatus[] = [
   'Not Started', 'In Progress', 'On Hold', 'Cancelled', 'Completed',
 ];
 
+// --- Delivery monitoring types ---
+
+export type DeliveryStatus =
+  | 'pending'
+  | 'accepted'
+  | 'sent'
+  | 'delivered'
+  | 'read'
+  | 'failed'
+  | 'rejected';
+
+export interface ReminderAttempt {
+  id: string;
+  reminder_id: string | null;
+  appointment_id: string | null;
+  bird_message_id: string | null;
+  channel: 'sms' | 'email';
+  recipient_address: string;
+  delivery_status: DeliveryStatus;
+  error_code: string | null;
+  error_description: string | null;
+  error_meta_code: string | null;
+  status_timestamp: string | null;
+  template_slug: string | null;
+  template_params: Record<string, string> | null;
+  original_message: string | null;
+  agent_notified: boolean;
+  agent_notification_status: string;
+  is_retry: boolean;
+  parent_attempt_id: string | null;
+  resolved_by_retry: boolean;
+  created_at: string;
+}
+
+export interface DeliveryAlert {
+  id: string;
+  attempt_id: string;
+  acknowledged: boolean;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  resolved: boolean;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  created_at: string;
+}
+
+export interface DeliveryFailureWithDetails {
+  attempt: ReminderAttempt;
+  alert: DeliveryAlert;
+  appointment: Appointment | null;
+  agent: Profile | null;
+}
+
 export interface Subtask {
   id: string;
   task_id: string;

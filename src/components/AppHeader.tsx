@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ListTodo,
   Calculator,
+  MessageSquare,
 } from 'lucide-react';
 
 interface AppHeaderProps {
@@ -22,6 +23,8 @@ interface AppHeaderProps {
   onOpenReminderStatus: () => void;
   onOpenExport: () => void;
   onOpenTasks: () => void;
+  onOpenMessageStatus: () => void;
+  messageFailureCount: number;
 }
 
 export function AppHeader({
@@ -32,6 +35,8 @@ export function AppHeader({
   onOpenReminderStatus,
   onOpenExport,
   onOpenTasks,
+  onOpenMessageStatus,
+  messageFailureCount,
 }: AppHeaderProps) {
   const { profile, signOut } = useAuth();
   const [showAdminMenu, setShowAdminMenu] = useState(false);
@@ -56,6 +61,24 @@ export function AppHeader({
           >
             <ListTodo className="w-4 h-4" />
             <span className="hidden sm:inline">Tasks</span>
+          </button>
+
+          <button
+            onClick={onOpenMessageStatus}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition relative"
+          >
+            <MessageSquare className="w-4 h-4" />
+            <span className="hidden sm:inline">Msg Status</span>
+            {messageFailureCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center">
+                <span className="w-3 h-3 bg-red-500 rounded-full ring-2 ring-white" />
+                {messageFailureCount > 0 && messageFailureCount <= 9 && (
+                  <span className="absolute -top-1 -right-1 text-[9px] font-bold text-white bg-red-600 rounded-full w-4 h-4 flex items-center justify-center">
+                    {messageFailureCount}
+                  </span>
+                )}
+              </span>
+            )}
           </button>
 
           <button

@@ -173,7 +173,15 @@ async function sendBirdSMS(toPhone: string, templateData: any, birdApiKey: strin
       const errText = await res.text();
       return { success: false, error: `Bird API error (${res.status}): ${errText}` };
     }
-    return { success: true };
+    // Bird returns 202 with a JSON body containing the message ID
+    let birdMessageId: string | null = null;
+    try {
+      const resJson = await res.json();
+      birdMessageId = resJson?.id || null;
+    } catch {
+      // Response was not JSON — proceed without message ID
+    }
+    return { success: true, birdMessageId };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -574,8 +582,34 @@ Deno.serve(async (req: Request) => {
         const result = await sendBirdSMS(body.recipient_address, smsMessage, birdApiKey);
 
         if (result.success) {
+          // Create a reminder_attempts record to track Bird delivery status via webhook
+          const originalMessage = `WhatsApp appointment confirmation to ${appt.client_name} for ${formatDate(appt.appointment_date)} at ${formatTime(appt.start_time)}`;
+          const { data: attemptRec } = await supabase
+            .from("reminder_attempts")
+            .insert({
+              appointment_id: appt.id,
+              channel: "sms",
+              recipient_address: body.recipient_address,
+              bird_message_id: result.birdMessageId || null,
+              delivery_status: "pending",
+              template_slug: "appointment_confirmation",
+              template_params: {
+                company_name: smsMessage.companyName,
+                first_name: smsMessage.firstName,
+                appointment_date: smsMessage.appointmentDate,
+                appointment_time: smsMessage.appointmentTime,
+                company_address: smsMessage.companyAddress,
+                callback_number: smsMessage.callbackNumber,
+              },
+              original_message: originalMessage,
+              is_retry: !!body.parent_attempt_id,
+              parent_attempt_id: body.parent_attempt_id || null,
+            })
+            .select("id")
+            .maybeSingle();
+
           return new Response(
-            JSON.stringify({ status: "sent", channel: "sms", recipient: body.recipient_address }),
+            JSON.stringify({ status: "sent", channel: "sms", recipient: body.recipient_address, bird_message_id: result.birdMessageId || null, attempt_id: attemptRec?.id || null }),
             { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
           );
         } else {

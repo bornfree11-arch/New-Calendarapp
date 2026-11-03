@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus } from '@/types';
+import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus, ReminderAttempt, DeliveryAlert, DeliveryFailureWithDetails } from '@/types';
 
 export interface AuditEntry {
   id: string;
@@ -419,4 +419,179 @@ export async function updateSubtask(id: string, updates: Partial<Pick<Subtask, '
 export async function deleteSubtask(id: string): Promise<void> {
   const { error } = await supabase.from('subtasks').delete().eq('id', id);
   if (error) throw error;
+}
+
+// --- Delivery monitoring API ---
+
+export async function getUnacknowledgedFailureCount(): Promise<number> {
+  const { count, error } = await supabase
+    .from('delivery_alerts')
+    .select('id', { count: 'exact', head: true })
+    .eq('acknowledged', false)
+    .eq('resolved', false);
+  if (error) throw error;
+  return count || 0;
+}
+
+export async function getDeliveryFailures(): Promise<DeliveryFailureWithDetails[]> {
+  // Get all alerts (including acknowledged/resolved for history)
+  const { data: alerts, error: alertError } = await supabase
+    .from('delivery_alerts')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (alertError) throw alertError;
+  if (!alerts || alerts.length === 0) return [];
+
+  const alertList = alerts as DeliveryAlert[];
+  const attemptIds = alertList.map(a => a.attempt_id);
+
+  const { data: attempts, error: attemptError } = await supabase
+    .from('reminder_attempts')
+    .select('*')
+    .in('id', attemptIds);
+  if (attemptError) throw attemptError;
+
+  const attemptList = (attempts || []) as ReminderAttempt[];
+  const apptIds = [...new Set(attemptList.map(a => a.appointment_id).filter(Boolean))] as string[];
+
+  // Fetch appointments
+  let apptMap = new Map<string, Appointment>();
+  if (apptIds.length > 0) {
+    const { data: appts } = await supabase
+      .from('appointments')
+      .select('*')
+      .in('id', apptIds);
+    (appts || []).forEach((a: Appointment) => apptMap.set(a.id, a));
+  }
+
+  // Fetch agent profiles for all appointments
+  const agentIdsFromAppts = [...new Set([...apptMap.values()].map(a => a.assigned_to))];
+  let agentMap = new Map<string, Profile>();
+  if (agentIdsFromAppts.length > 0) {
+    const { data: agents } = await supabase
+      .from('profiles')
+      .select('*')
+      .in('id', agentIdsFromAppts);
+    (agents || []).forEach((p: Profile) => agentMap.set(p.id, p));
+  }
+
+  return alertList.map(alert => {
+    const attempt = attemptList.find(a => a.id === alert.attempt_id);
+    if (!attempt) return null;
+    const appt = attempt.appointment_id ? apptMap.get(attempt.appointment_id) || null : null;
+    const agent = appt ? agentMap.get(appt.assigned_to) || null : null;
+    return { attempt, alert, appointment: appt, agent };
+  }).filter((x): x is DeliveryFailureWithDetails => x !== null);
+}
+
+export async function acknowledgeAlert(alertId: string, userId: string): Promise<void> {
+  const { error } = await supabase
+    .from('delivery_alerts')
+    .update({
+      acknowledged: true,
+      acknowledged_at: new Date().toISOString(),
+      acknowledged_by: userId,
+    })
+    .eq('id', alertId);
+  if (error) throw error;
+}
+
+export async function resolveAlert(alertId: string, userId: string): Promise<void> {
+  const { error } = await supabase
+    .from('delivery_alerts')
+    .update({
+      resolved: true,
+      resolved_at: new Date().toISOString(),
+      resolved_by: userId,
+    })
+    .eq('id', alertId);
+  if (error) throw error;
+}
+
+export async function retryFailedMessage(attemptId: string): Promise<{ success: boolean; error?: string; attempt_id?: string }> {
+  // Fetch the original attempt to get template params
+  const { data: attempt, error: attemptError } = await supabase
+    .from('reminder_attempts')
+    .select('*')
+    .eq('id', attemptId)
+    .maybeSingle<ReminderAttempt>();
+  if (attemptError) throw attemptError;
+  if (!attempt) return { success: false, error: 'Original attempt not found.' };
+
+  // Must have template params to safely reconstruct the message
+  if (!attempt.template_params || !attempt.template_slug) {
+    return { success: false, error: 'Original message content cannot be safely reconstructed — template parameters are missing.' };
+  }
+
+  // Fetch the appointment and profile to send via the send-reminder edge function
+  if (!attempt.appointment_id) {
+    return { success: false, error: 'Appointment no longer exists for this attempt.' };
+  }
+
+  const { data: appt, error: apptError } = await supabase
+    .from('appointments')
+    .select('*')
+    .eq('id', attempt.appointment_id)
+    .maybeSingle<Appointment>();
+  if (apptError || !appt) {
+    return { success: false, error: 'Could not load appointment for retry.' };
+  }
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('full_name, email, phone')
+    .eq('id', appt.assigned_to)
+    .maybeSingle<{ full_name: string; email: string; phone: string | null }>();
+
+  if (!profile) {
+    return { success: false, error: 'Assigned agent profile not found.' };
+  }
+
+  // Call the send-reminder edge function with manual=true and parent_attempt_id
+  const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-reminder`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+  };
+
+  // Get current session token
+  const { data: session } = await supabase.auth.getSession();
+  if (session?.session?.access_token) {
+    headers['Authorization'] = `Bearer ${session.session.access_token}`;
+  }
+
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      manual: true,
+      channel: 'sms',
+      recipient_type: 'client',
+      recipient_address: attempt.recipient_address,
+      appointment: appt,
+      profile,
+      parent_attempt_id: attemptId,
+    }),
+  });
+
+  if (!response.ok) {
+    return { success: false, error: `Retry request failed (${response.status})` };
+  }
+
+  const result = await response.json();
+
+  if (result.status === 'sent') {
+    return { success: true, attempt_id: result.attempt_id || null };
+  }
+
+  return { success: false, error: result.error || 'Retry send failed.' };
+}
+
+export async function getAllAttempts(): Promise<ReminderAttempt[]> {
+  const { data, error } = await supabase
+    .from('reminder_attempts')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []) as ReminderAttempt[];
 }

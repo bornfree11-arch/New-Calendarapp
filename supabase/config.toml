@@ -5,3 +5,7 @@ entrypoint = "./functions/send-reminder/index.ts"
 [functions.upload-logo]
 verify_jwt = false
 entrypoint = "./functions/upload-logo/index.ts"
+
+[functions.bird-webhook]
+verify_jwt = false
+entrypoint = "./functions/bird-webhook/index.ts"
