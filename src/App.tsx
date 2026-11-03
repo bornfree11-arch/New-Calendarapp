@@ -26,6 +26,7 @@ import { ResetPasswordScreen } from '@/screens/ResetPasswordScreen';
 import { TasksScreen } from '@/screens/TasksScreen';
 import { TaskDetailsModal } from '@/components/TaskDetailsModal';
 import { MessageStatusCenter } from '@/screens/MessageStatusCenter';
+import { FocusModeWindow } from '@/screens/FocusModeWindow';
 import { AppHeader } from '@/components/AppHeader';
 import { addDays, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import { Loader2 } from 'lucide-react';
@@ -360,9 +361,12 @@ function AppContent() {
 }
 
 function App() {
+  const isFocusWindow =
+    new URLSearchParams(window.location.search).get('view') === 'focus';
+
   return (
     <AuthProvider>
-      <AppContent />
+      {isFocusWindow ? <FocusModeWindow /> : <AppContent />}
     </AuthProvider>
   );
 }
