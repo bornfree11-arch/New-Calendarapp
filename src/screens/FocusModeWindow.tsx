@@ -282,7 +282,8 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
           </div>
         </div>
 
-        <div className="px-5 py-4">
+        {/* Sticky summary banner — stays visible while task list scrolls */}
+        <div className="sticky top-14 z-[5] bg-slate-50 px-5 pt-4 pb-4">
           {error && (
             <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
               {error}
@@ -290,7 +291,7 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
           )}
 
           {/* Combined duration banner */}
-          <div className="bg-gradient-to-r from-teal-600 to-teal-700 rounded-2xl px-6 py-5 mb-4 shadow-sm">
+          <div className="bg-gradient-to-r from-teal-600 to-teal-700 rounded-2xl px-6 py-5 shadow-sm">
             <div className="flex items-center gap-2 text-teal-100 text-xs font-medium uppercase tracking-wide mb-1">
               <Clock className="w-3.5 h-3.5" />
               Total Estimated Time{isLocked ? ' — Session' : ''}
@@ -304,7 +305,9 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
               {overdueCount > 0 && ` · ${overdueCount} overdue`}
             </div>
           </div>
+        </div>
 
+        <div className="px-5 pb-4">
           {loading ? (
             <div className="flex items-center justify-center py-12 text-slate-400">
               <Loader2 className="w-6 h-6 animate-spin" />
