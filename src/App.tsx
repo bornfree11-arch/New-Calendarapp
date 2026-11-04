@@ -28,6 +28,7 @@ import { TaskDetailsModal } from '@/components/TaskDetailsModal';
 import { MessageStatusCenter } from '@/screens/MessageStatusCenter';
 import { FocusModeWindow } from '@/screens/FocusModeWindow';
 import { AppHeader } from '@/components/AppHeader';
+import { useFocusSession } from '@/lib/useFocusSession';
 import { addDays, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import { Loader2 } from 'lucide-react';
 
@@ -60,6 +61,7 @@ function AppContent() {
   const [taskModalDefaultDueDate, setTaskModalDefaultDueDate] = useState<string | undefined>(undefined);
   const [messageFailureCount, setMessageFailureCount] = useState(0);
   const [focusOpen, setFocusOpen] = useState(false);
+  const focusSession = useFocusSession();
 
   const loadReferenceData = useCallback(async () => {
     try {
@@ -237,19 +239,21 @@ function AppContent() {
         </div>
       )}
 
-      {(view === 'monthly' || view === 'daily') && (
-        <AppHeader
-          onOpenSearch={() => setModal('search')}
-          onOpenUserManagement={() => setModal('userManagement')}
-          onOpenCompanyManagement={() => setModal('companyManagement')}
-          onOpenAuditLog={() => setModal('auditLog')}
-          onOpenReminderStatus={() => setModal('reminderStatus')}
-          onOpenExport={() => setModal('exportCSV')}
-          onOpenTasks={() => setView('tasks')}
-          onOpenMessageStatus={() => setModal('messageStatus')}
-          messageFailureCount={messageFailureCount}
-        />
-      )}
+      <AppHeader
+        onOpenSearch={() => setModal('search')}
+        onOpenUserManagement={() => setModal('userManagement')}
+        onOpenCompanyManagement={() => setModal('companyManagement')}
+        onOpenAuditLog={() => setModal('auditLog')}
+        onOpenReminderStatus={() => setModal('reminderStatus')}
+        onOpenExport={() => setModal('exportCSV')}
+        onOpenTasks={() => setView('tasks')}
+        onOpenMessageStatus={() => setModal('messageStatus')}
+        messageFailureCount={messageFailureCount}
+        focusSession={focusSession.session}
+        focusCurrentTask={focusSession.currentTask}
+        focusRemainingMs={focusSession.remainingMs}
+        onOpenFocus={() => setFocusOpen(true)}
+      />
 
       {view === 'monthly' && (
         <MonthlyView
@@ -360,7 +364,10 @@ function AppContent() {
       )}
 
       {focusOpen && (
-        <FocusModeWindow onClose={() => setFocusOpen(false)} />
+        <FocusModeWindow
+          onClose={() => setFocusOpen(false)}
+          focusSession={focusSession}
+        />
       )}
     </>
   );

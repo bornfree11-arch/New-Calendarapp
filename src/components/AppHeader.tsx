@@ -13,7 +13,9 @@ import {
   ListTodo,
   Calculator,
   MessageSquare,
+  Timer,
 } from 'lucide-react';
+import { FocusSession, FocusSessionTask } from '@/types';
 
 interface AppHeaderProps {
   onOpenSearch: () => void;
@@ -25,6 +27,10 @@ interface AppHeaderProps {
   onOpenTasks: () => void;
   onOpenMessageStatus: () => void;
   messageFailureCount: number;
+  focusSession?: FocusSession | null;
+  focusCurrentTask?: FocusSessionTask | null;
+  focusRemainingMs?: number;
+  onOpenFocus?: () => void;
 }
 
 export function AppHeader({
@@ -37,6 +43,10 @@ export function AppHeader({
   onOpenTasks,
   onOpenMessageStatus,
   messageFailureCount,
+  focusSession,
+  focusCurrentTask,
+  focusRemainingMs,
+  onOpenFocus,
 }: AppHeaderProps) {
   const { profile, signOut } = useAuth();
   const [showAdminMenu, setShowAdminMenu] = useState(false);
@@ -52,6 +62,21 @@ export function AppHeader({
           <h1 className="text-base font-semibold text-slate-800 truncate hidden sm:block">
             Shared Calendar
           </h1>
+          {focusSession && focusCurrentTask && focusSession.status === 'active' && onOpenFocus && (
+            <button
+              onClick={onOpenFocus}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-lg transition shrink-0"
+              title="Open Focus session"
+            >
+              <Timer className="w-4 h-4 text-teal-600 shrink-0" />
+              <span className="truncate max-w-[160px] text-teal-800">{focusCurrentTask.title}</span>
+              <span className={`font-mono text-xs font-semibold px-1.5 py-0.5 rounded ${
+                (focusRemainingMs ?? 0) <= 0 ? 'text-red-700 bg-red-100' : 'text-teal-700 bg-teal-100'
+              }`}>
+                {formatCountdown(focusRemainingMs ?? 0)}
+              </span>
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-1 sm:gap-2">
@@ -151,4 +176,13 @@ function AdminMenuItem({ icon, label, onClick }: { icon: React.ReactNode; label:
       {label}
     </button>
   );
+}
+
+function formatCountdown(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }

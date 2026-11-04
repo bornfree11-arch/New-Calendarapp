@@ -223,6 +223,34 @@ export function isLightColor(hex: string): boolean {
   return luminance > 0.6;
 }
 
+// --- Focus session types (Phase 2) ---
+
+export type FocusSessionStatus = 'active' | 'completed';
+
+export interface FocusSessionTask {
+  taskId: string;
+  title: string;
+  actionCategory: TaskActionCategory;
+  dueDate: string;
+  status: string;
+  hours: number;
+  minutes: number;
+}
+
+export interface FocusSession {
+  id: string;
+  user_id: string;
+  tasks: FocusSessionTask[];
+  current_task_index: number;
+  task_started_at: string | null;
+  task_deadline_at: string | null;
+  completed_task_ids: string[];
+  skipped_task_ids: string[];
+  status: FocusSessionStatus;
+  created_at: string;
+  updated_at: string;
+}
+
 export const TIME_SLOTS: string[] = (() => {
   const slots: string[] = [];
   for (let h = 7; h <= 18; h++) {

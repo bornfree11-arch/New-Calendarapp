@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus, ReminderAttempt, DeliveryAlert, DeliveryFailureWithDetails } from '@/types';
+import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus, ReminderAttempt, DeliveryAlert, DeliveryFailureWithDetails, FocusSession, FocusSessionTask } from '@/types';
 
 export interface AuditEntry {
   id: string;
@@ -594,4 +594,74 @@ export async function getAllAttempts(): Promise<ReminderAttempt[]> {
     .order('created_at', { ascending: false });
   if (error) throw error;
   return (data || []) as ReminderAttempt[];
+}
+
+// --- Focus sessions API ---
+
+function parseSessionRow(row: Record<string, unknown>): FocusSession {
+  return {
+    id: row['id'] as string,
+    user_id: row['user_id'] as string,
+    tasks: (row['tasks'] as FocusSessionTask[]) || [],
+    current_task_index: row['current_task_index'] as number,
+    task_started_at: (row['task_started_at'] as string | null) || null,
+    task_deadline_at: (row['task_deadline_at'] as string | null) || null,
+    completed_task_ids: (row['completed_task_ids'] as string[]) || [],
+    skipped_task_ids: (row['skipped_task_ids'] as string[]) || [],
+    status: row['status'] as 'active' | 'completed',
+    created_at: row['created_at'] as string,
+    updated_at: row['updated_at'] as string,
+  };
+}
+
+export async function getActiveFocusSession(): Promise<FocusSession | null> {
+  const { data, error } = await supabase
+    .from('focus_sessions')
+    .select('*')
+    .eq('status', 'active')
+    .maybeSingle<Record<string, unknown>>();
+  if (error) throw error;
+  if (!data) return null;
+  return parseSessionRow(data);
+}
+
+export async function createFocusSession(
+  tasks: FocusSessionTask[],
+  taskStartedAt: string,
+  taskDeadlineAt: string,
+): Promise<FocusSession> {
+  const { data, error } = await supabase
+    .from('focus_sessions')
+    .insert({
+      tasks,
+      current_task_index: 0,
+      task_started_at: taskStartedAt,
+      task_deadline_at: taskDeadlineAt,
+      completed_task_ids: [],
+      skipped_task_ids: [],
+      status: 'active',
+    })
+    .select('*')
+    .single<Record<string, unknown>>();
+  if (error) throw error;
+  return parseSessionRow(data);
+}
+
+export async function updateFocusSession(
+  id: string,
+  updates: Partial<Pick<FocusSession, 'current_task_index' | 'task_started_at' | 'task_deadline_at' | 'completed_task_ids' | 'skipped_task_ids' | 'status'>>,
+): Promise<FocusSession> {
+  const { data, error } = await supabase
+    .from('focus_sessions')
+    .update(updates)
+    .eq('id', id)
+    .select('*')
+    .single<Record<string, unknown>>();
+  if (error) throw error;
+  return parseSessionRow(data);
+}
+
+export async function deleteFocusSession(id: string): Promise<void> {
+  const { error } = await supabase.from('focus_sessions').delete().eq('id', id);
+  if (error) throw error;
 }

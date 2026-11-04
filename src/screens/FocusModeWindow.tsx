@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { getTasks } from '@/lib/store';
-import { Task, TaskActionCategory } from '@/types';
+import { getTasks, getTaskDetails, updateTask, updateSubtask } from '@/lib/store';
+import { Task, TaskActionCategory, Subtask, FocusSessionTask, FocusSession } from '@/types';
 import { formatDateLong, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import { CATEGORY_COLORS } from '@/components/TaskDetailsModal';
+import type { useFocusSession } from '@/lib/useFocusSession';
 import {
   Loader2,
   GripVertical,
@@ -17,11 +18,15 @@ import {
   EyeOff,
   RotateCcw,
   Lock,
+  CheckCircle2,
+  SkipForward,
+  PlusCircle,
+  PartyPopper,
 } from 'lucide-react';
 
 type FocusState = 'active' | 'ignored';
 
-interface FocusTask {
+interface DraftTask {
   taskId: string;
   title: string;
   actionCategory: TaskActionCategory;
@@ -32,12 +37,10 @@ interface FocusTask {
   state: FocusState;
 }
 
-interface CommittedSession {
-  tasks: FocusTask[];
-}
-
 const EXCLUDED_STATUSES = new Set(['Completed', 'Cancelled']);
 const STORAGE_PREFIX = 'focus-draft-';
+
+type FocusSessionHook = ReturnType<typeof useFocusSession>;
 
 function isEligible(task: Task): boolean {
   if (EXCLUDED_STATUSES.has(task.status)) return false;
@@ -55,7 +58,16 @@ function formatDuration(totalMinutes: number): string {
   return `${h}h ${m}m`;
 }
 
-function toDraftRow(task: Task): FocusTask {
+function formatCountdown(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function toDraftRow(task: Task): DraftTask {
   return {
     taskId: task.id,
     title: task.title,
@@ -68,17 +80,49 @@ function toDraftRow(task: Task): FocusTask {
   };
 }
 
-interface FocusModeWindowProps {
-  onClose: () => void;
+function draftToSessionTask(d: DraftTask): FocusSessionTask {
+  return {
+    taskId: d.taskId,
+    title: d.title,
+    actionCategory: d.actionCategory,
+    dueDate: d.dueDate,
+    status: d.status,
+    hours: d.hours,
+    minutes: d.minutes,
+  };
 }
 
-export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
+interface FocusModeWindowProps {
+  onClose: () => void;
+  focusSession: FocusSessionHook;
+}
+
+export function FocusModeWindow({ onClose, focusSession }: FocusModeWindowProps) {
   const { profile } = useAuth();
-  const [focusTasks, setFocusTasks] = useState<FocusTask[]>([]);
-  const [committed, setCommitted] = useState<CommittedSession | null>(null);
+  const activeSession = focusSession.session;
+
+  if (activeSession && activeSession.status === 'active') {
+    return <ActiveSessionView session={activeSession} hook={focusSession} onClose={onClose} />;
+  }
+
+  if (activeSession && activeSession.status === 'completed') {
+    return <SessionSummaryView session={activeSession} hook={focusSession} onClose={onClose} />;
+  }
+
+  return <PreparationView profile={profile} hook={focusSession} onClose={onClose} />;
+}
+
+// ---------------------------------------------------------------------------
+// Preparation View (Phase 1 — unchanged behavior)
+// ---------------------------------------------------------------------------
+
+function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeof useAuth>['profile']; hook: FocusSessionHook; onClose: () => void }) {
+  const [focusTasks, setFocusTasks] = useState<DraftTask[]>([]);
+  const [committed, setCommitted] = useState<{ tasks: DraftTask[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [startMessage, setStartMessage] = useState('');
+  const [starting, setStarting] = useState(false);
   const dragIndexRef = useRef<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
@@ -91,10 +135,9 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
     setLoading(true);
     setError('');
     try {
-      // Try to restore a saved draft or committed session from localStorage
       const saved = localStorage.getItem(storageKey);
       if (saved) {
-        const parsed = JSON.parse(saved) as { draft?: FocusTask[]; committed?: CommittedSession | null };
+        const parsed = JSON.parse(saved) as { draft?: DraftTask[]; committed?: { tasks: DraftTask[] } | null };
         if (parsed.committed) {
           setCommitted(parsed.committed);
           setFocusTasks(parsed.committed.tasks);
@@ -102,10 +145,8 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
           return;
         }
         if (parsed.draft && parsed.draft.length > 0) {
-          // Refresh task data from server but preserve draft ordering, estimates, and states
           const allTasks = await getTasks();
           const taskMap = new Map(allTasks.map(t => [t.id, t]));
-          // Only keep draft tasks that still exist and are still eligible
           const refreshed = parsed.draft
             .filter(d => taskMap.has(d.taskId))
             .filter(d => isEligible(taskMap.get(d.taskId)!))
@@ -113,7 +154,6 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
               const t = taskMap.get(d.taskId)!;
               return { ...d, title: t.title, actionCategory: t.action_category, status: t.status, dueDate: t.due_date! };
             });
-          // Add any newly-eligible tasks not already in the draft
           const existingIds = new Set(refreshed.map(d => d.taskId));
           const newEligible = allTasks
             .filter(isEligible)
@@ -124,7 +164,6 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
           return;
         }
       }
-      // No saved draft — fetch fresh
       const allTasks = await getTasks();
       const eligible = allTasks.filter(isEligible);
       eligible.sort((a, b) => {
@@ -143,7 +182,6 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
     loadTasks();
   }, [loadTasks]);
 
-  // Persist draft to localStorage whenever it changes (only if not committed)
   useEffect(() => {
     if (!storageKey || loading) return;
     if (committed) return;
@@ -219,15 +257,19 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
     setDragOverIndex(null);
   }
 
-  function handleStart() {
+  async function handleStart() {
     if (!allValid || !storageKey) return;
-    const committedTasks = focusTasks.filter(ft => ft.state === 'active');
-    const session: CommittedSession = { tasks: committedTasks };
-    setCommitted(session);
-    setFocusTasks(committedTasks);
-    // Persist committed state — draft is no longer editable
-    localStorage.setItem(storageKey, JSON.stringify({ draft: null, committed: session }));
-    setStartMessage('Session committed. Active Focus session countdown will be enabled in Phase 2.');
+    setStarting(true);
+    setError('');
+    try {
+      const committedTasks = focusTasks.filter(ft => ft.state === 'active');
+      const sessionTasks = committedTasks.map(draftToSessionTask);
+      await hook.startSession(sessionTasks);
+      localStorage.removeItem(storageKey);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start session.');
+      setStarting(false);
+    }
   }
 
   function handleStartNewPrep() {
@@ -282,7 +324,7 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
           </div>
         </div>
 
-        {/* Sticky summary banner — stays visible while task list scrolls */}
+        {/* Sticky summary banner */}
         <div className="sticky top-14 z-[5] bg-slate-50 px-5 pt-4 pb-4">
           {error && (
             <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
@@ -290,7 +332,6 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
             </div>
           )}
 
-          {/* Combined duration banner */}
           <div className="bg-gradient-to-r from-teal-600 to-teal-700 rounded-2xl px-6 py-5 shadow-sm">
             <div className="flex items-center gap-2 text-teal-100 text-xs font-medium uppercase tracking-wide mb-1">
               <Clock className="w-3.5 h-3.5" />
@@ -321,7 +362,6 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
             </div>
           ) : (
             <>
-              {/* Task list */}
               <div className="space-y-2 mb-4">
                 {focusTasks.map((ft, index) => (
                   <TaskDragRow
@@ -342,19 +382,18 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
                 ))}
               </div>
 
-              {/* Start / committed controls */}
               {!isLocked ? (
                 <>
                   <button
                     onClick={handleStart}
-                    disabled={!allValid}
+                    disabled={!allValid || starting}
                     className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold rounded-xl transition shadow-sm ${
-                      allValid
+                      allValid && !starting
                         ? 'bg-teal-600 text-white hover:bg-teal-700'
                         : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                     }`}
                   >
-                    <Play className="w-4 h-4" />
+                    {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
                     Start Focus Session
                   </button>
 
@@ -378,7 +417,6 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
                       <p className="font-medium">Session committed.</p>
                       <p className="text-xs mt-0.5 text-amber-600">
                         {activeTasks.length} task{activeTasks.length !== 1 ? 's' : ''} locked in execution order.
-                        Active countdown will be enabled in Phase 2.
                       </p>
                     </div>
                   </div>
@@ -406,8 +444,394 @@ export function FocusModeWindow({ onClose }: FocusModeWindowProps) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Active Session View (Phase 2)
+// ---------------------------------------------------------------------------
+
+function ActiveSessionView({ session, hook, onClose }: { session: FocusSession; hook: FocusSessionHook; onClose: () => void }) {
+  const currentTask = session.tasks[session.current_task_index];
+  const remainingMs = hook.remainingMs;
+  const isAtZero = hook.isAtZero;
+
+  const [subtasks, setSubtasks] = useState<Subtask[]>([]);
+  const [taskNotes, setTaskNotes] = useState('');
+  const [loadingDetails, setLoadingDetails] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [showPostpone, setShowPostpone] = useState(false);
+  const [customPostpone, setCustomPostpone] = useState('');
+
+  useEffect(() => {
+    if (!currentTask) return;
+    let cancelled = false;
+    setLoadingDetails(true);
+    (async () => {
+      try {
+        const details = await getTaskDetails(currentTask.taskId);
+        if (cancelled) return;
+        setSubtasks(details.subtasks);
+        setTaskNotes(details.task?.notes || '');
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load task details.');
+      } finally {
+        if (!cancelled) setLoadingDetails(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [currentTask?.taskId]);
+
+  async function handleComplete() {
+    if (!currentTask) return;
+    setActionLoading(true);
+    setError('');
+    try {
+      await updateTask(currentTask.taskId, { status: 'Completed' });
+      await hook.advanceToNextTask('completed');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to complete task.');
+      setActionLoading(false);
+    }
+  }
+
+  async function handleSkip() {
+    if (!currentTask) return;
+    setActionLoading(true);
+    setError('');
+    try {
+      await hook.advanceToNextTask('skipped');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to skip task.');
+      setActionLoading(false);
+    }
+  }
+
+  async function handlePostpone(minutes: number) {
+    setActionLoading(true);
+    setError('');
+    try {
+      await hook.postpone(minutes);
+      setShowPostpone(false);
+      setCustomPostpone('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to postpone.');
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleToggleSubtask(subtask: Subtask) {
+    try {
+      const updated = await updateSubtask(subtask.id, { completed: !subtask.completed });
+      setSubtasks(prev => prev.map(s => s.id === subtask.id ? updated : s));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update subtask.');
+    }
+  }
+
+  if (!currentTask) {
+    return null;
+  }
+
+  const totalTasks = session.tasks.length;
+  const taskNumber = session.current_task_index + 1;
+  const completedCount = session.completed_task_ids.length;
+  const skippedCount = session.skipped_task_ids.length;
+  const progress = ((completedCount + skippedCount) / totalTasks) * 100;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-slate-50 rounded-2xl shadow-2xl w-full max-w-[640px] max-h-[90vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="bg-white border-b border-slate-200 sticky top-0 z-10 rounded-t-2xl">
+          <div className="px-5 h-14 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <Timer className="w-5 h-5 text-teal-600 shrink-0" />
+              <h2 className="text-base font-semibold text-slate-800 truncate">Focus Session</h2>
+              <span className="text-xs text-slate-400 shrink-0">
+                Task {taskNumber} of {totalTasks}
+              </span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={onClose}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
+                title="Minimize — session continues in background"
+              >
+                <Minimize2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Minimize</span>
+              </button>
+              <button
+                onClick={onClose}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Countdown banner */}
+        <div className="sticky top-14 z-[5] bg-slate-50 px-5 pt-4 pb-4">
+          <div className={`rounded-2xl px-6 py-5 shadow-sm transition-colors ${
+            isAtZero
+              ? 'bg-gradient-to-r from-red-600 to-red-700'
+              : 'bg-gradient-to-r from-teal-600 to-teal-700'
+          }`}>
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2 text-teal-100 text-xs font-medium uppercase tracking-wide" style={isAtZero ? { color: 'rgba(254,226,226,0.9)' } : undefined}>
+                <Clock className="w-3.5 h-3.5" />
+                {isAtZero ? 'Time Expired' : 'Time Remaining'}
+              </div>
+              <div className="text-xs text-teal-100" style={isAtZero ? { color: 'rgba(254,226,226,0.9)' } : undefined}>
+                {completedCount} done · {skippedCount} skipped
+              </div>
+            </div>
+            <div className="text-3xl font-bold text-white font-mono">
+              {formatCountdown(remainingMs)}
+            </div>
+            {/* Progress bar */}
+            <div className="mt-3 h-1.5 bg-white/20 rounded-full overflow-hidden">
+              <div className="h-full bg-white/80 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 pb-4">
+          {error && (
+            <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+              {error}
+            </div>
+          )}
+
+          {/* Current task info */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4">
+            <div className="flex items-center gap-2 flex-wrap mb-2">
+              <h3 className="text-lg font-semibold text-slate-800">{currentTask.title}</h3>
+              <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${CATEGORY_COLORS[currentTask.actionCategory]}`}>
+                {currentTask.actionCategory}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 text-xs text-slate-400">
+              {currentTask.dueDate && (
+                <span className="flex items-center gap-1">
+                  <CalendarIcon className="w-3 h-3" />
+                  {formatDateLong(parseDateISO(currentTask.dueDate))}
+                </span>
+              )}
+              <span>Estimate: {formatDuration(currentTask.hours * 60 + currentTask.minutes)}</span>
+            </div>
+            {taskNotes && (
+              <p className="text-sm text-slate-500 mt-2 whitespace-pre-wrap">{taskNotes}</p>
+            )}
+          </div>
+
+          {/* Subtasks */}
+          {loadingDetails ? (
+            <div className="flex items-center justify-center py-6 text-slate-400">
+              <Loader2 className="w-5 h-5 animate-spin" />
+            </div>
+          ) : subtasks.length > 0 ? (
+            <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4">
+              <h4 className="text-sm font-semibold text-slate-700 mb-3">Subtasks</h4>
+              <div className="space-y-1.5">
+                {subtasks.map(st => (
+                  <label
+                    key={st.id}
+                    className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer transition"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={st.completed}
+                      onChange={() => handleToggleSubtask(st)}
+                      className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                    />
+                    <span className={`text-sm ${st.completed ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
+                      {st.title}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {/* Action buttons */}
+          <div className="space-y-2">
+            <button
+              onClick={handleComplete}
+              disabled={actionLoading}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold rounded-xl transition shadow-sm bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+            >
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+              Complete Task
+            </button>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowPostpone(s => !s)}
+                disabled={!isAtZero || actionLoading}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl transition ${
+                  isAtZero && !actionLoading
+                    ? 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
+                    : 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                }`}
+                title={isAtZero ? 'Add more time' : 'Available when countdown reaches zero'}
+              >
+                <PlusCircle className="w-4 h-4" />
+                Postpone
+              </button>
+              <button
+                onClick={handleSkip}
+                disabled={actionLoading}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl transition bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 disabled:opacity-50"
+              >
+                <SkipForward className="w-4 h-4" />
+                Skip
+              </button>
+            </div>
+
+            {showPostpone && isAtZero && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  {[15, 30, 45, 60].map(m => (
+                    <button
+                      key={m}
+                      onClick={() => handlePostpone(m)}
+                      disabled={actionLoading}
+                      className="px-3 py-1.5 text-sm font-medium bg-white text-amber-700 border border-amber-300 rounded-lg hover:bg-amber-100 transition disabled:opacity-50"
+                    >
+                      +{m}m
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={480}
+                    value={customPostpone}
+                    onChange={(e) => setCustomPostpone(e.target.value)}
+                    placeholder="Custom minutes"
+                    className="w-32 px-2 py-1.5 text-sm border border-slate-300 rounded-lg text-center focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none transition"
+                  />
+                  <button
+                    onClick={() => {
+                      const m = parseInt(customPostpone);
+                      if (m > 0) handlePostpone(m);
+                    }}
+                    disabled={actionLoading || !customPostpone || parseInt(customPostpone) <= 0}
+                    className="px-3 py-1.5 text-sm font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition disabled:opacity-50"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Session Summary View
+// ---------------------------------------------------------------------------
+
+function SessionSummaryView({ session, hook, onClose }: { session: FocusSession; hook: FocusSessionHook; onClose: () => void }) {
+  const completedIds = new Set(session.completed_task_ids);
+  const skippedIds = new Set(session.skipped_task_ids);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-slate-50 rounded-2xl shadow-2xl w-full max-w-[640px] max-h-[90vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="bg-white border-b border-slate-200 sticky top-0 z-10 rounded-t-2xl">
+          <div className="px-5 h-14 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <PartyPopper className="w-5 h-5 text-teal-600 shrink-0" />
+              <h2 className="text-base font-semibold text-slate-800 truncate">Session Complete</h2>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition"
+              title="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="px-5 py-6">
+          <div className="bg-gradient-to-r from-teal-600 to-teal-700 rounded-2xl px-6 py-5 mb-4 shadow-sm text-center">
+            <PartyPopper className="w-10 h-10 text-teal-100 mx-auto mb-2" />
+            <p className="text-white text-lg font-semibold">All tasks processed!</p>
+            <p className="text-teal-200 text-sm mt-1">
+              {session.completed_task_ids.length} completed · {session.skipped_task_ids.length} skipped
+            </p>
+          </div>
+
+          <div className="space-y-2 mb-4">
+            {session.tasks.map((task, i) => {
+              const isCompleted = completedIds.has(task.taskId);
+              const isSkipped = skippedIds.has(task.taskId);
+              return (
+                <div
+                  key={task.taskId}
+                  className={`bg-white rounded-xl border p-3 flex items-center gap-3 ${
+                    isCompleted ? 'border-green-200' : isSkipped ? 'border-slate-200' : 'border-slate-200'
+                  }`}
+                >
+                  <div className="shrink-0">
+                    {isCompleted ? (
+                      <CheckCircle2 className="w-5 h-5 text-green-500" />
+                    ) : (
+                      <SkipForward className="w-5 h-5 text-slate-400" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className={`text-sm font-medium ${isSkipped ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
+                      {i + 1}. {task.title}
+                    </span>
+                    <div className="text-xs text-slate-400 mt-0.5">
+                      Estimate: {formatDuration(task.hours * 60 + task.minutes)}
+                    </div>
+                  </div>
+                  <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
+                    isCompleted ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'
+                  }`}>
+                    {isCompleted ? 'Completed' : 'Skipped'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <button
+            onClick={async () => { await hook.dismissSession(); }}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold rounded-xl transition shadow-sm bg-teal-600 text-white hover:bg-teal-700"
+          >
+            <RotateCcw className="w-4 h-4" />
+            Done — Start New Preparation
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Task Row (Phase 1 — unchanged)
+// ---------------------------------------------------------------------------
+
 interface TaskDragRowProps {
-  focusTask: FocusTask;
+  focusTask: DraftTask;
   index: number;
   isDragOver: boolean;
   isLocked: boolean;
@@ -456,14 +880,12 @@ function TaskDragRow({
       } ${isLocked ? 'cursor-default' : ''}`}
     >
       <div className={`flex items-start gap-2 ${isIgnored ? 'opacity-50' : ''}`}>
-        {/* Drag handle */}
         {!isLocked && (
           <div className="flex items-center pt-1 cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 transition shrink-0">
             <GripVertical className="w-5 h-5" />
           </div>
         )}
 
-        {/* Task info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`text-sm font-medium ${isIgnored ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
@@ -483,7 +905,6 @@ function TaskDragRow({
             </span>
           </div>
 
-          {/* Duration inputs */}
           <div className="flex items-center gap-2 mt-2">
             <label className="text-xs text-slate-500 font-medium">Estimate:</label>
             <div className="flex items-center gap-1">
@@ -513,7 +934,6 @@ function TaskDragRow({
           </div>
         </div>
 
-        {/* Ignore / Reactivate button */}
         {!isLocked && (
           <button
             onClick={() => onToggleIgnore(index)}
