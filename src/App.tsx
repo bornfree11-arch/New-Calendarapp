@@ -61,7 +61,7 @@ function AppContent() {
   const [taskModalDefaultDueDate, setTaskModalDefaultDueDate] = useState<string | undefined>(undefined);
   const [messageFailureCount, setMessageFailureCount] = useState(0);
   const [focusOpen, setFocusOpen] = useState(false);
-  const focusSession = useFocusSession();
+  const focusSession = useFocusSession({ profile, authLoading: loading });
 
   const loadReferenceData = useCallback(async () => {
     try {

@@ -267,7 +267,12 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
       await hook.startSession(sessionTasks);
       localStorage.removeItem(storageKey);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start session.');
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('duplicate') || msg.includes('unique')) {
+        setError('An active Focus session already exists. It has been loaded for you.');
+      } else {
+        setError(msg || 'Failed to start session.');
+      }
       setStarting(false);
     }
   }

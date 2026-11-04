@@ -5,22 +5,23 @@ import {
   createFocusSession,
   updateFocusSession,
 } from '@/lib/store';
-import { FocusSession, FocusSessionTask } from '@/types';
+import { FocusSession, FocusSessionTask, Profile } from '@/types';
 
 export interface SessionSummaryEntry {
   task: FocusSessionTask;
   outcome: 'completed' | 'skipped';
 }
 
-function calcRemainingMs(deadlineAt: string | null): number {
-  if (!deadlineAt) return 0;
-  return Math.max(0, new Date(deadlineAt).getTime() - Date.now());
+interface UseFocusSessionArgs {
+  profile: Profile | null;
+  authLoading: boolean;
 }
 
-export function useFocusSession() {
+export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
   const [session, setSession] = useState<FocusSession | null>(null);
   const [now, setNow] = useState(Date.now());
   const sessionRef = useRef<FocusSession | null>(null);
+  const loadRequestIdRef = useRef(0);
 
   sessionRef.current = session;
 
@@ -30,19 +31,31 @@ export function useFocusSession() {
     return () => clearInterval(interval);
   }, []);
 
-  // Load active session on mount
+  // Load active session — only when authentication is ready
   const loadSession = useCallback(async () => {
+    const requestId = ++loadRequestIdRef.current;
     try {
       const s = await getActiveFocusSession();
+      // Prevent stale responses from overwriting newer state
+      if (requestId !== loadRequestIdRef.current) return;
       setSession(s);
     } catch {
+      if (requestId !== loadRequestIdRef.current) return;
       setSession(null);
     }
   }, []);
 
+  // Re-run loading when the authenticated user changes or becomes available
   useEffect(() => {
+    if (authLoading) return;
+    if (!profile) {
+      // User signed out or not authenticated — clear any stale session
+      ++loadRequestIdRef.current;
+      setSession(null);
+      return;
+    }
     loadSession();
-  }, [loadSession]);
+  }, [profile, authLoading, loadSession]);
 
   // Compute remaining time from the saved deadline
   const remainingMs = session?.task_deadline_at
@@ -57,11 +70,32 @@ export function useFocusSession() {
 
   const startSession = useCallback(async (tasks: FocusSessionTask[]) => {
     if (tasks.length === 0) return;
+
+    // Check for an existing active session before attempting to create one
+    const existing = await getActiveFocusSession();
+    if (existing) {
+      setSession(existing);
+      return existing;
+    }
+
     const startedAt = new Date().toISOString();
     const totalMinutes = tasks[0].hours * 60 + tasks[0].minutes;
     const deadline = new Date(Date.now() + totalMinutes * 60_000).toISOString();
-    const s = await createFocusSession(tasks, startedAt, deadline);
-    setSession(s);
+
+    try {
+      const s = await createFocusSession(tasks, startedAt, deadline);
+      setSession(s);
+      return s;
+    } catch (err) {
+      // Race condition: another session was created between our check and insert.
+      // The unique partial index blocks the duplicate — attempt to retrieve it.
+      const recovered = await getActiveFocusSession();
+      if (recovered) {
+        setSession(recovered);
+        return recovered;
+      }
+      throw err;
+    }
   }, []);
 
   const advanceToNextTask = useCallback(async (outcome: 'completed' | 'skipped') => {
