@@ -28,6 +28,7 @@ import { TaskDetailsModal } from '@/components/TaskDetailsModal';
 import { MessageStatusCenter } from '@/screens/MessageStatusCenter';
 import { FocusModeWindow } from '@/screens/FocusModeWindow';
 import { AppHeader } from '@/components/AppHeader';
+import { TimerExpiredPopup } from '@/components/TimerExpiredPopup';
 import { useFocusSession } from '@/lib/useFocusSession';
 import { addDays, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import { Loader2 } from 'lucide-react';
@@ -367,6 +368,16 @@ function AppContent() {
         <FocusModeWindow
           onClose={() => setFocusOpen(false)}
           focusSession={focusSession}
+        />
+      )}
+
+      {focusSession.expiredTask && !focusOpen && (
+        <TimerExpiredPopup
+          task={focusSession.expiredTask}
+          onPostpone={(m) => focusSession.postpone(m)}
+          onSkip={() => focusSession.advanceToNextTask('skipped')}
+          onDismiss={focusSession.dismissExpiredPopup}
+          onOpenFocus={() => setFocusOpen(true)}
         />
       )}
     </>

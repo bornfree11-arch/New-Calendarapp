@@ -23,6 +23,12 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
   const sessionRef = useRef<FocusSession | null>(null);
   const loadRequestIdRef = useRef(0);
 
+  // Track which task index we've already fired the expiration notification for.
+  // Keyed by task index + session id so a session reload after refresh won't
+  // re-notify for a task that was already expired when the page loaded.
+  const notifiedKeyRef = useRef<string | null>(null);
+  const [expiredTask, setExpiredTask] = useState<FocusSessionTask | null>(null);
+
   sessionRef.current = session;
 
   // Tick every second to refresh countdown display
@@ -52,6 +58,8 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
       // User signed out or not authenticated — clear any stale session
       ++loadRequestIdRef.current;
       setSession(null);
+      notifiedKeyRef.current = null;
+      setExpiredTask(null);
       return;
     }
     loadSession();
@@ -67,6 +75,54 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
   const currentTask: FocusSessionTask | null = session && session.current_task_index < session.tasks.length
     ? session.tasks[session.current_task_index]
     : null;
+
+  // Detect task expiration and fire notifications exactly once per task
+  useEffect(() => {
+    if (!session || !currentTask || !session.task_deadline_at) {
+      setExpiredTask(null);
+      return;
+    }
+
+    const deadlineMs = new Date(session.task_deadline_at).getTime();
+    const isExpired = Date.now() >= deadlineMs;
+    const notifyKey = `${session.id}:${session.current_task_index}`;
+
+    if (isExpired) {
+      // Only fire if we haven't already notified for this task in this session
+      if (notifiedKeyRef.current !== notifyKey) {
+        notifiedKeyRef.current = notifyKey;
+        setExpiredTask(currentTask);
+
+        // Fire desktop notification if tab is hidden and permission granted
+        if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          try {
+            const n = new Notification('Focus time expired', {
+              body: `"${currentTask.title}" — the allotted time has ended.`,
+              tag: `focus-expired-${notifyKey}`,
+            });
+            n.onclick = () => {
+              window.focus();
+              n.close();
+            };
+          } catch {
+            // Some browsers throw if the notification constructor fails
+          }
+        }
+      }
+    } else {
+      // Task is not expired — clear the notified key so a future expiration
+      // (e.g. after postpone extends the deadline) will notify again
+      if (notifiedKeyRef.current === notifyKey) {
+        notifiedKeyRef.current = null;
+      }
+      setExpiredTask(null);
+    }
+  }, [session, currentTask, now]);
+
+  // Clear expired popup when the popup is dismissed
+  const dismissExpiredPopup = useCallback(() => {
+    setExpiredTask(null);
+  }, []);
 
   const startSession = useCallback(async (tasks: FocusSessionTask[]) => {
     if (tasks.length === 0) return;
@@ -84,6 +140,7 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
 
     try {
       const s = await createFocusSession(tasks, startedAt, deadline);
+      notifiedKeyRef.current = null;
       setSession(s);
       return s;
     } catch (err) {
@@ -120,6 +177,8 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
         task_deadline_at: null,
         status: 'completed',
       });
+      notifiedKeyRef.current = null;
+      setExpiredTask(null);
       setSession(updated);
       return;
     }
@@ -136,6 +195,8 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
       task_started_at: nextStartedAt,
       task_deadline_at: nextDeadline,
     });
+    notifiedKeyRef.current = null;
+    setExpiredTask(null);
     setSession(updated);
   }, [currentTask]);
 
@@ -147,6 +208,9 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
     const updated = await updateFocusSession(s.id, {
       task_deadline_at: newDeadline,
     });
+    // Clear the notified key so a future expiration will notify again
+    notifiedKeyRef.current = null;
+    setExpiredTask(null);
     setSession(updated);
   }, []);
 
@@ -154,6 +218,8 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
     const s = sessionRef.current;
     if (!s) return;
     await updateFocusSession(s.id, { status: 'completed' });
+    notifiedKeyRef.current = null;
+    setExpiredTask(null);
     setSession(null);
   }, []);
 
@@ -163,6 +229,8 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
     remainingMs,
     isAtZero,
     now,
+    expiredTask,
+    dismissExpiredPopup,
     startSession,
     advanceToNextTask,
     postpone,

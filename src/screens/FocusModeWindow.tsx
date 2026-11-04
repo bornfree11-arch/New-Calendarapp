@@ -126,6 +126,63 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
   const dragIndexRef = useRef<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
+  // Auto-scroll state for drag-and-drop
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const dragClientYRef = useRef<number | null>(null);
+  const autoScrollRafRef = useRef<number | null>(null);
+
+  const EDGE_ZONE = 60; // pixels from top/bottom edge where auto-scroll activates
+  const MAX_SCROLL_SPEED = 14; // pixels per frame at the very edge
+
+  const stopAutoScroll = useCallback(() => {
+    dragClientYRef.current = null;
+    if (autoScrollRafRef.current !== null) {
+      cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+    }
+  }, []);
+
+  const autoScrollLoop = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const clientY = dragClientYRef.current;
+    if (!container || clientY === null) {
+      autoScrollRafRef.current = null;
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+    const relativeY = clientY - rect.top;
+    const distanceFromTop = relativeY;
+    const distanceFromBottom = rect.height - relativeY;
+
+    let scrollDelta = 0;
+    if (distanceFromTop < EDGE_ZONE && distanceFromTop > 0) {
+      // Scroll up — speed increases as pointer approaches the top edge
+      const intensity = 1 - distanceFromTop / EDGE_ZONE;
+      scrollDelta = -Math.ceil(MAX_SCROLL_SPEED * intensity);
+    } else if (distanceFromBottom < EDGE_ZONE && distanceFromBottom > 0) {
+      // Scroll down — speed increases as pointer approaches the bottom edge
+      const intensity = 1 - distanceFromBottom / EDGE_ZONE;
+      scrollDelta = Math.ceil(MAX_SCROLL_SPEED * intensity);
+    }
+
+    if (scrollDelta !== 0) {
+      container.scrollTop += scrollDelta;
+      autoScrollRafRef.current = requestAnimationFrame(autoScrollLoop);
+    } else {
+      autoScrollRafRef.current = null;
+    }
+  }, []);
+
+  const startAutoScrollIfNeeded = useCallback((clientY: number) => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    dragClientYRef.current = clientY;
+    if (autoScrollRafRef.current === null) {
+      autoScrollRafRef.current = requestAnimationFrame(autoScrollLoop);
+    }
+  }, [autoScrollLoop]);
+
   const storageKey = useMemo(() => {
     return profile ? `${STORAGE_PREFIX}${profile.id}` : null;
   }, [profile]);
@@ -231,6 +288,7 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
     if (isLocked) return;
     e.preventDefault();
     if (dragOverIndex !== index) setDragOverIndex(index);
+    startAutoScrollIfNeeded(e.clientY);
   }
 
   function handleDragLeave() {
@@ -255,6 +313,7 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
   function handleDragEnd() {
     dragIndexRef.current = null;
     setDragOverIndex(null);
+    stopAutoScroll();
   }
 
   async function handleStart() {
@@ -293,6 +352,7 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <div
+        ref={scrollContainerRef}
         className="bg-slate-50 rounded-2xl shadow-2xl w-full max-w-[640px] max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
