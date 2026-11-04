@@ -81,12 +81,21 @@ export function AppHeader({
 
         <div className="flex items-center gap-1 sm:gap-2">
           <button
-            onClick={onOpenTasks}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
-          >
-            <ListTodo className="w-4 h-4" />
-            <span className="hidden sm:inline">Tasks</span>
-          </button>
+  onClick={onOpenTasks}
+  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
+>
+  <ListTodo className="w-4 h-4" />
+  <span className="hidden sm:inline">Tasks</span>
+</button>
+
+<button
+  onClick={onOpenFocus}
+  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-teal-700 hover:bg-teal-50 rounded-lg transition"
+  title="Open Focus Mode"
+>
+  <Timer className="w-4 h-4" />
+  <span className="hidden sm:inline">Focus</span>
+</button>
 
           <button
             onClick={onOpenMessageStatus}
