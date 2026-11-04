@@ -204,7 +204,12 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
     const s = sessionRef.current;
     if (!s || !s.task_deadline_at) return;
     const baseDeadline = new Date(s.task_deadline_at).getTime();
-    const newDeadline = new Date(baseDeadline + extraMinutes * 60_000).toISOString();
+    const nowMs = Date.now();
+    // If the deadline has already passed, calculate the new deadline from the
+    // current timestamp so the user gets the full extension. Otherwise, extend
+    // the existing deadline to preserve remaining time.
+    const startMs = baseDeadline < nowMs ? nowMs : baseDeadline;
+    const newDeadline = new Date(startMs + extraMinutes * 60_000).toISOString();
     const updated = await updateFocusSession(s.id, {
       task_deadline_at: newDeadline,
     });

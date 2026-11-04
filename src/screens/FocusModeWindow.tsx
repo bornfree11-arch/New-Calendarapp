@@ -67,6 +67,17 @@ function formatCountdown(ms: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+function formatElapsed(startISO: string, endISO: string): string {
+  const startMs = new Date(startISO).getTime();
+  const endMs = new Date(endISO).getTime();
+  const totalMinutes = Math.max(0, Math.round((endMs - startMs) / 60_000));
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (h === 0) return `${m} min`;
+  if (m === 0) return `${h} hr`;
+  return `${h} hr ${m} min`;
+}
+
 function toDraftRow(task: Task): DraftTask {
   return {
     taskId: task.id,
@@ -288,6 +299,11 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
     if (isLocked) return;
     e.preventDefault();
     if (dragOverIndex !== index) setDragOverIndex(index);
+  }
+
+  function handleContainerDragOver(e: React.DragEvent) {
+    if (isLocked) return;
+    e.preventDefault();
     startAutoScrollIfNeeded(e.clientY);
   }
 
@@ -353,6 +369,7 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <div
         ref={scrollContainerRef}
+        onDragOver={handleContainerDragOver}
         className="bg-slate-50 rounded-2xl shadow-2xl w-full max-w-[640px] max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
@@ -410,6 +427,20 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
               {!isLocked && ignoredTasks.length > 0 && ` · ${ignoredTasks.length} ignored`}
               {overdueCount > 0 && ` · ${overdueCount} overdue`}
             </div>
+            {!isLocked && !loading && focusTasks.length > 0 && (
+              <button
+                onClick={handleStart}
+                disabled={!allValid || starting}
+                className={`mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl transition ${
+                  allValid && !starting
+                    ? 'bg-white text-teal-700 hover:bg-teal-50'
+                    : 'bg-teal-800/50 text-teal-300 cursor-not-allowed'
+                }`}
+              >
+                {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                Start Focus Session
+              </button>
+            )}
           </div>
         </div>
 
@@ -840,6 +871,12 @@ function SessionSummaryView({ session, hook, onClose }: { session: FocusSession;
             <p className="text-teal-200 text-sm mt-1">
               {session.completed_task_ids.length} completed · {session.skipped_task_ids.length} skipped
             </p>
+            <div className="mt-3 inline-flex items-center gap-2 bg-white/15 rounded-full px-4 py-1.5">
+              <Clock className="w-4 h-4 text-teal-100" />
+              <span className="text-white text-sm font-medium">
+                Total Session Time: {formatElapsed(session.created_at, session.updated_at)}
+              </span>
+            </div>
           </div>
 
           <div className="space-y-2 mb-4">
