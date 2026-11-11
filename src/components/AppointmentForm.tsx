@@ -561,9 +561,10 @@ export function AppointmentForm({
                   type="text"
                   value={customerSearchQuery}
                   onChange={(e) => setCustomerSearchQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
                   placeholder="Search customer directory by name, phone, or email..."
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
-                />
+                 />
                 {customerSearchLoading && (
                   <div className="absolute right-3 top-1/2 -translate-y-1/2">
                     <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
@@ -583,7 +584,7 @@ export function AppointmentForm({
                           {c.phone && `${c.phone}`}
                           {c.phone && c.email && ' · '}
                           {c.email && c.email}
-                          {c.tags.length > 0 && ` · ${c.tags.join(', ')}`}
+                          {c.is_global && ' · Global'}
                         </div>
                       </button>
                     ))}
