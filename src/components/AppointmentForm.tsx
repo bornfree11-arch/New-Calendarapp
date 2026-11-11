@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { saveAppointment, getAppointmentsByDate, searchAppointments, searchCustomers, buildCompanySnapshot } from '@/lib/store';
+import { saveAppointment, getAppointmentsByDate, searchAppointments, searchCustomers, buildCompanySnapshot, findMatchingCustomer, saveCustomer } from '@/lib/store';
 import {
   Appointment,
   Profile,
@@ -23,7 +23,7 @@ import {
   isValidEmail,
   isDummyPhoneNumber,
 } from '@/lib/dateUtils';
-import { X, Save, AlertTriangle, Search, Loader2, MessageCircle, Users } from 'lucide-react';
+import { X, Save, AlertTriangle, Search, Loader2, MessageCircle, Users, BookUser, Globe } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface AppointmentFormProps {
@@ -86,6 +86,10 @@ export function AppointmentForm({
   const [customerSearchResults, setCustomerSearchResults] = useState<Customer[]>([]);
   const [customerSearchLoading, setCustomerSearchLoading] = useState(false);
   const [showCustomerSearch, setShowCustomerSearch] = useState(false);
+  const [updateCustomerRecord, setUpdateCustomerRecord] = useState(true);
+  const [saveToBook, setSaveToBook] = useState(true);
+  const [saveAsGlobal, setSaveAsGlobal] = useState(false);
+  const [linkedCustomer, setLinkedCustomer] = useState<Customer | null>(null);
 
   const timeSlotOptions = useMemo(() => {
     const slots: string[] = [];
@@ -181,16 +185,19 @@ export function AppointmentForm({
 
   function selectCustomerFromDirectory(customer: Customer) {
     setSelectedCustomerId(customer.id);
+    setLinkedCustomer(customer);
     setClientName(customer.full_name);
     setClientPhone(customer.phone || '');
     setClientEmail(customer.email || '');
     setSendWhatsapp(customer.send_whatsapp && !isDummyPhoneNumber(customer.phone || '') && !!customer.phone);
     setCustomerSearchQuery('');
     setShowCustomerSearch(false);
+    setUpdateCustomerRecord(true);
   }
 
   function clearCustomerLink() {
     setSelectedCustomerId(null);
+    setLinkedCustomer(null);
     setClientName('');
     setClientPhone('');
     setClientEmail('');
@@ -286,6 +293,70 @@ export function AppointmentForm({
         }
       }
 
+      // If editing an existing appointment with no customer linked, offer one-click save to customer book
+      let resolvedCustomerId = selectedCustomerId;
+
+      if (appointment && !resolvedCustomerId && saveToBook && clientName.trim()) {
+        const phoneDigits = (clientPhone || '').replace(/\D/g, '');
+        const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
+        const match = await findMatchingCustomer(clientName.trim(), hasRealPhone ? clientPhone : '', clientEmail || '');
+        if (match) {
+          resolvedCustomerId = match.id;
+        } else {
+          const newCust = await saveCustomer({
+            full_name: clientName.trim(),
+            phone: hasRealPhone ? clientPhone : '',
+            email: clientEmail || '',
+            notes: '',
+            tags: [],
+            company_id: companyId || null,
+            assigned_user_id: assignedTo || null,
+            is_global: saveAsGlobal,
+            send_whatsapp: hasRealPhone && sendWhatsapp,
+          }, currentUser?.id || null);
+          resolvedCustomerId = newCust.id;
+        }
+      }
+
+      // If creating a new appointment with no customer linked and save-to-book is checked
+      if (!appointment && !resolvedCustomerId && saveToBook && clientName.trim()) {
+        const phoneDigits = (clientPhone || '').replace(/\D/g, '');
+        const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
+        const match = await findMatchingCustomer(clientName.trim(), hasRealPhone ? clientPhone : '', clientEmail || '');
+        if (match) {
+          resolvedCustomerId = match.id;
+        } else {
+          const newCust = await saveCustomer({
+            full_name: clientName.trim(),
+            phone: hasRealPhone ? clientPhone : '',
+            email: clientEmail || '',
+            notes: '',
+            tags: [],
+            company_id: companyId || null,
+            assigned_user_id: assignedTo || null,
+            is_global: saveAsGlobal,
+            send_whatsapp: hasRealPhone && sendWhatsapp,
+          }, currentUser?.id || null);
+          resolvedCustomerId = newCust.id;
+        }
+      }
+
+      // Update linked customer record if user edited phone/email and checkbox is on
+      if (resolvedCustomerId && linkedCustomer && updateCustomerRecord) {
+        const phoneChanged = clientPhone !== (linkedCustomer.phone || '');
+        const emailChanged = clientEmail !== (linkedCustomer.email || '');
+        if (phoneChanged || emailChanged) {
+          const phoneDigits = (clientPhone || '').replace(/\D/g, '');
+          const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
+          await saveCustomer({
+            id: resolvedCustomerId,
+            phone: hasRealPhone ? clientPhone : (linkedCustomer.phone || ''),
+            email: clientEmail || (linkedCustomer.email || ''),
+            send_whatsapp: hasRealPhone ? sendWhatsapp : linkedCustomer.send_whatsapp,
+          }, currentUser?.id || null);
+        }
+      }
+
       const assignedComp = companies.find(c => c.id === companyId);
       const savedAppt = await saveAppointment({
         ...(appointment?.id ? { id: appointment.id } : {}),
@@ -303,7 +374,7 @@ export function AppointmentForm({
         company_snapshot: buildCompanySnapshot(assignedComp || null) || appointment?.company_snapshot || null,
         status: status,
         send_whatsapp: sendWhatsapp,
-        customer_id: selectedCustomerId,
+        customer_id: resolvedCustomerId,
         created_by: appointment?.created_by || currentUser?.id || null,
       }, currentUser?.id || null);
 
@@ -521,16 +592,65 @@ export function AppointmentForm({
               </div>
             )}
 
-            {selectedCustomerId && (
-              <div className="flex items-center justify-between bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
-                <span className="text-xs text-teal-700 font-medium">Linked to customer directory</span>
-                <button
-                  type="button"
-                  onClick={clearCustomerLink}
-                  className="text-xs text-teal-600 hover:text-teal-800 font-medium"
-                >
-                  Unlink
-                </button>
+            {selectedCustomerId && linkedCustomer && (() => {
+              const phoneChanged = clientPhone !== (linkedCustomer.phone || '');
+              const emailChanged = clientEmail !== (linkedCustomer.email || '');
+              const showUpdateCheckbox = phoneChanged || emailChanged;
+              return (
+                <>
+                  <div className="flex items-center justify-between bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
+                    <span className="text-xs text-teal-700 font-medium">Linked to customer directory</span>
+                    <button
+                      type="button"
+                      onClick={clearCustomerLink}
+                      className="text-xs text-teal-600 hover:text-teal-800 font-medium"
+                    >
+                      Unlink
+                    </button>
+                  </div>
+                  {showUpdateCheckbox && (
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={updateCustomerRecord}
+                        onChange={(e) => setUpdateCustomerRecord(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                      />
+                      <span className="text-xs text-slate-600">Update customer record with new contact info</span>
+                    </label>
+                  )}
+                </>
+              );
+            })()}
+
+            {!selectedCustomerId && (
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={saveToBook}
+                    onChange={(e) => setSaveToBook(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  <span className="text-xs text-slate-600 flex items-center gap-1.5">
+                    <BookUser className="w-3.5 h-3.5 text-teal-600" />
+                    Save customer to Book of Business
+                  </span>
+                </label>
+                {saveToBook && (
+                  <label className="flex items-center gap-2 cursor-pointer select-none ml-6">
+                    <input
+                      type="checkbox"
+                      checked={saveAsGlobal}
+                      onChange={(e) => setSaveAsGlobal(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                    />
+                    <span className="text-xs text-slate-600 flex items-center gap-1">
+                      <Globe className="w-3 h-3 text-blue-600" />
+                      Global Customer
+                    </span>
+                  </label>
+                )}
               </div>
             )}
 

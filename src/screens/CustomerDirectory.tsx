@@ -1,9 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getCustomers, saveCustomer, deleteCustomer, searchCustomers, getCompanies, getProfiles } from '@/lib/store';
+import {
+  getCustomers,
+  saveCustomer,
+  deleteCustomer,
+  searchCustomers,
+  getCompanies,
+  getProfiles,
+  getAppointments,
+  findMatchingCustomer,
+  mergeCustomers,
+} from '@/lib/store';
 import { useAuth } from '@/context/AuthContext';
 import { Customer, Company, Profile } from '@/types';
 import { formatPhoneNumber, isValidPhoneNumber, isValidEmail, isDummyPhoneNumber } from '@/lib/dateUtils';
-import { X, Plus, Pencil, Trash2, Users, Search, Loader2, Phone, Mail, MessageCircle, Building2, UserCircle, Globe } from 'lucide-react';
+import { X, Plus, Pencil, Trash2, Users, Search, Loader2, Phone, Mail, MessageCircle, Building2, UserCircle, Globe, GitMerge, Download, MapPin, Cake } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface CustomerDirectoryProps {
@@ -26,6 +36,9 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
   const [showAddForm, setShowAddForm] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [reassigningId, setReassigningId] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importSummary, setImportSummary] = useState<{ created: number; linked: number; skipped: number } | null>(null);
+  const [mergingCustomerId, setMergingCustomerId] = useState<string | null>(null);
 
   const loadData = useCallback(async (query?: string) => {
     setLoading(true);
@@ -85,6 +98,74 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
     }
   }
 
+  async function handleImportFromAppointments() {
+    setImporting(true);
+    setError('');
+    setImportSummary(null);
+    try {
+      const appointments = await getAppointments();
+      let created = 0;
+      let linked = 0;
+      let skipped = 0;
+
+      for (const appt of appointments) {
+        const name = (appt.client_name || '').trim();
+        if (!name) { skipped++; continue; }
+
+        const phoneDigits = (appt.client_phone || '').replace(/\D/g, '');
+        const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
+        const phone = hasRealPhone ? appt.client_phone : '';
+        const email = (appt.client_email || '').trim();
+
+        const existing = await findMatchingCustomer(name, phone, email);
+        if (existing) {
+          if (appt.customer_id !== existing.id) {
+            const { error: updErr } = await supabase
+              .from('appointments')
+              .update({ customer_id: existing.id, updated_at: new Date().toISOString() })
+              .eq('id', appt.id);
+            if (!updErr) linked++;
+            else skipped++;
+          } else {
+            skipped++;
+          }
+        } else {
+          const { data: newCustomer, error: createErr } = await supabase
+            .from('customers')
+            .insert({
+              full_name: name,
+              phone: phone || '',
+              email: email || '',
+              notes: '',
+              tags: [],
+              company_id: appt.company_id || null,
+              assigned_user_id: appt.assigned_to || null,
+              is_global: false,
+              send_whatsapp: hasRealPhone && appt.send_whatsapp,
+              created_by: currentUser?.id || null,
+            })
+            .select('*')
+            .single<Customer>();
+          if (createErr) { skipped++; continue; }
+          created++;
+          const { error: updErr } = await supabase
+            .from('appointments')
+            .update({ customer_id: newCustomer.id, updated_at: new Date().toISOString() })
+            .eq('id', appt.id);
+          if (updErr) skipped++;
+        }
+      }
+
+      setImportSummary({ created, linked, skipped });
+      await loadData(searchQuery);
+      onDataChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to import from appointments.');
+    } finally {
+      setImporting(false);
+    }
+  }
+
   const companyName = (id: string | null) => companies.find(c => c.id === id)?.name || '—';
   const employeeName = (id: string | null) => profiles.find(p => p.id === id)?.full_name || '—';
 
@@ -103,6 +184,15 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
             <h2 className="text-lg font-semibold text-slate-800">Customer Directory</h2>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleImportFromAppointments}
+              disabled={importing}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition"
+              title="Scan existing appointments and create/link customer records"
+            >
+              {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              Import from Appointments
+            </button>
             <button
               onClick={() => setShowAddForm(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium rounded-lg transition"
@@ -157,6 +247,17 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
           </div>
         </div>
 
+        {importSummary && (
+          <div className="mx-6 mt-4 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-start justify-between gap-3">
+            <div>
+              <strong>Import complete.</strong> Created {importSummary.created} new customer{importSummary.created !== 1 ? 's' : ''}, linked {importSummary.linked} appointment{importSummary.linked !== 1 ? 's' : ''} to existing customers, and skipped {importSummary.skipped} appointment{importSummary.skipped !== 1 ? 's' : ''} (already linked or no name).
+            </div>
+            <button onClick={() => setImportSummary(null)} className="text-blue-500 hover:text-blue-700 shrink-0">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {error && (
           <div className="mx-6 mt-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
             {error}
@@ -196,6 +297,12 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
                           <MessageCircle className="w-3 h-3" /> WhatsApp
                         </span>
                       )}
+                      {customer.date_of_birth && (
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full font-medium">
+                          <Cake className="w-3 h-3" />
+                          {new Date(customer.date_of_birth + 'T00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </span>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 mt-1">
                       {customer.phone && (
@@ -213,6 +320,11 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
                       <span className="text-xs text-slate-500 flex items-center gap-1">
                         <Building2 className="w-3 h-3" /> {customer.is_global ? 'All companies' : companyName(customer.company_id)}
                       </span>
+                      {(customer.city || customer.state) && (
+                        <span className="text-xs text-slate-500 flex items-center gap-1">
+                          <MapPin className="w-3 h-3" /> {[customer.city, customer.state].filter(Boolean).join(', ')}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 mt-1.5">
                       <UserCircle className="w-3 h-3 text-slate-400" />
@@ -234,6 +346,13 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
                     )}
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => setMergingCustomerId(customer.id)}
+                      className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition"
+                      title="Merge another customer into this one"
+                    >
+                      <GitMerge className="w-4 h-4" />
+                    </button>
                     <button
                       onClick={() => setEditingCustomer(customer)}
                       className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition"
@@ -268,6 +387,91 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
           onSaved={() => { setShowAddForm(false); setEditingCustomer(null); loadData(searchQuery); onDataChange?.(); }}
         />
       )}
+
+      {mergingCustomerId && (
+        <MergeModal
+          keepCustomer={customers.find(c => c.id === mergingCustomerId)!}
+          allCustomers={customers}
+          onClose={() => setMergingCustomerId(null)}
+          onMerged={() => { setMergingCustomerId(null); loadData(searchQuery); onDataChange?.(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function MergeModal({ keepCustomer, allCustomers, onClose, onMerged }: {
+  keepCustomer: Customer;
+  allCustomers: Customer[];
+  onClose: () => void;
+  onMerged: () => void;
+}) {
+  const { profile: currentUser } = useAuth();
+  const [duplicateId, setDuplicateId] = useState<string>('');
+  const [merging, setMerging] = useState(false);
+  const [error, setError] = useState('');
+
+  const candidates = allCustomers.filter(c => c.id !== keepCustomer.id);
+
+  async function handleMerge() {
+    if (!duplicateId) { setError('Please select a customer to merge in.'); return; }
+    setMerging(true);
+    setError('');
+    try {
+      await mergeCustomers(keepCustomer.id, duplicateId, currentUser?.id || null);
+      onMerged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to merge customers.');
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+          <div className="flex items-center gap-2">
+            <GitMerge className="w-5 h-5 text-teal-600" />
+            <h2 className="text-lg font-semibold text-slate-800">Merge Customers</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg transition">
+            <X className="w-5 h-5 text-slate-500" />
+          </button>
+        </div>
+        <div className="px-6 py-4 space-y-4">
+          <div className="text-sm text-slate-600 bg-slate-50 rounded-lg px-4 py-3">
+            Merging <strong>{keepCustomer.full_name}</strong> will keep this record and absorb contact info, address, birthday, and notes from the duplicate. All appointments linked to the duplicate will be reassigned here, and the duplicate will be deleted.
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Select duplicate to merge in</label>
+            <select
+              value={duplicateId}
+              onChange={(e) => setDuplicateId(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none bg-white"
+            >
+              <option value="">Choose a customer…</option>
+              {candidates.map(c => (
+                <option key={c.id} value={c.id}>{c.full_name}{c.phone ? ` · ${c.phone}` : ''}{c.email ? ` · ${c.email}` : ''}</option>
+              ))}
+            </select>
+          </div>
+          {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">{error}</div>}
+          <div className="flex gap-3 pt-2">
+            <button
+              onClick={handleMerge}
+              disabled={merging || !duplicateId}
+              className="flex-1 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white font-medium py-2.5 rounded-lg transition text-sm flex items-center justify-center gap-2"
+            >
+              {merging && <Loader2 className="w-4 h-4 animate-spin" />}
+              {merging ? 'Merging...' : 'Merge'}
+            </button>
+            <button onClick={onClose} className="px-6 py-2.5 font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition text-sm">
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -288,6 +492,12 @@ function CustomerForm({ customer, companies, profiles, onClose, onSaved }: {
   const [assignedUserId, setAssignedUserId] = useState<string>(customer?.assigned_user_id || '');
   const [isGlobal, setIsGlobal] = useState(customer?.is_global ?? false);
   const [sendWhatsapp, setSendWhatsapp] = useState(customer?.send_whatsapp ?? true);
+  const [dateOfBirth, setDateOfBirth] = useState<string>(customer?.date_of_birth || '');
+  const [addressLine1, setAddressLine1] = useState(customer?.address_line1 || '');
+  const [addressLine2, setAddressLine2] = useState(customer?.address_line2 || '');
+  const [city, setCity] = useState(customer?.city || '');
+  const [stateVal, setStateVal] = useState(customer?.state || '');
+  const [zipCode, setZipCode] = useState(customer?.zip_code || '');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -320,6 +530,12 @@ function CustomerForm({ customer, companies, profiles, onClose, onSaved }: {
         assigned_user_id: assignedUserId || null,
         is_global: isGlobal,
         send_whatsapp: sendWhatsapp,
+        address_line1: addressLine1 || '',
+        address_line2: addressLine2 || '',
+        city: city || '',
+        state: stateVal || '',
+        zip_code: zipCode || '',
+        date_of_birth: dateOfBirth || null,
       }, currentUser?.id || null);
       onSaved();
     } catch (err) {
@@ -370,6 +586,62 @@ function CustomerForm({ customer, companies, profiles, onClose, onSaved }: {
               placeholder="client@example.com"
             />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Birthday</label>
+            <input
+              type="date"
+              value={dateOfBirth}
+              onChange={(e) => setDateOfBirth(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
+            />
+          </div>
+
+          <div className="border-t border-slate-100 pt-3">
+            <div className="flex items-center gap-1.5 mb-2">
+              <MapPin className="w-4 h-4 text-slate-400" />
+              <span className="text-sm font-semibold text-slate-700">Mailing Address</span>
+            </div>
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={addressLine1}
+                onChange={(e) => setAddressLine1(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
+                placeholder="Address Line 1"
+              />
+              <input
+                type="text"
+                value={addressLine2}
+                onChange={(e) => setAddressLine2(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
+                placeholder="Address Line 2 (optional)"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
+                  placeholder="City"
+                />
+                <input
+                  type="text"
+                  value={stateVal}
+                  onChange={(e) => setStateVal(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
+                  placeholder="State"
+                />
+              </div>
+              <input
+                type="text"
+                value={zipCode}
+                onChange={(e) => setZipCode(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
+                placeholder="ZIP Code"
+              />
+            </div>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Company</label>
             <select

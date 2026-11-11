@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { Appointment, Profile, Company, AppointmentStatus } from '@/types';
+import { Appointment, Profile, Company, AppointmentStatus, Customer } from '@/types';
 import { formatTime12, formatDateLong, getInitials, isDummyPhoneNumber } from '@/lib/dateUtils';
 import { supabase } from '@/lib/supabase';
-import { X, Edit2, Trash2, MapPin, Phone, Mail, Clock, Building, Send, MessageSquare, CheckCircle2, AlertCircle } from 'lucide-react';
+import { findMatchingCustomer, saveCustomer, searchCustomers } from '@/lib/store';
+import { X, Edit2, Trash2, MapPin, Phone, Mail, Clock, Building, Send, MessageSquare, CheckCircle2, AlertCircle, BookUser, Link2, Loader2, Search } from 'lucide-react';
 
 interface AppointmentDetailsProps {
   appointment: Appointment;
@@ -12,6 +13,7 @@ interface AppointmentDetailsProps {
   onEdit: () => void;
   onDelete: () => void;
   onClose: () => void;
+  onCustomerLinked?: (customerId: string) => void;
 }
 
 const STATUS_BADGE: Record<AppointmentStatus, string> = {
@@ -28,6 +30,7 @@ export function AppointmentDetails({
   onEdit,
   onDelete,
   onClose,
+  onCustomerLinked,
 }: AppointmentDetailsProps) {
   const { profile: currentUser } = useAuth();
   const isAdmin = currentUser?.role === 'admin';
@@ -35,6 +38,13 @@ export function AppointmentDetails({
   const [reminderError, setReminderError] = useState('');
   const [smsStatus, setSmsStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [smsError, setSmsError] = useState('');
+  const [savingToBook, setSavingToBook] = useState(false);
+  const [linkError, setLinkError] = useState('');
+  const [linkedCustomerId, setLinkedCustomerId] = useState<string | null>(appointment.customer_id || null);
+  const [showLinkSearch, setShowLinkSearch] = useState(false);
+  const [linkQuery, setLinkQuery] = useState('');
+  const [linkResults, setLinkResults] = useState<Customer[]>([]);
+  const [linkLoading, setLinkLoading] = useState(false);
 
   async function handleSendReminder() {
     if (!appointment.client_email) {
@@ -129,6 +139,65 @@ export function AppointmentDetails({
     } catch (err) {
       setSmsStatus('error');
       setSmsError(err instanceof Error ? err.message : 'Failed to send text notification.');
+    }
+  }
+
+  async function handleSaveToBook() {
+    setSavingToBook(true);
+    setLinkError('');
+    try {
+      const name = (appointment.client_name || '').trim();
+      if (!name) { setLinkError('No client name on this appointment.'); return; }
+      const phoneDigits = (appointment.client_phone || '').replace(/\D/g, '');
+      const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
+      const match = await findMatchingCustomer(name, hasRealPhone ? appointment.client_phone : '', appointment.client_email || '');
+      let customerId: string;
+      if (match) {
+        customerId = match.id;
+      } else {
+        const newCust = await saveCustomer({
+          full_name: name,
+          phone: hasRealPhone ? appointment.client_phone : '',
+          email: appointment.client_email || '',
+          notes: '',
+          tags: [],
+          company_id: appointment.company_id || null,
+          assigned_user_id: appointment.assigned_to || null,
+          is_global: false,
+          send_whatsapp: hasRealPhone && appointment.send_whatsapp,
+        }, currentUser?.id || null);
+        customerId = newCust.id;
+      }
+      const { error: updErr } = await supabase
+        .from('appointments')
+        .update({ customer_id: customerId, updated_at: new Date().toISOString() })
+        .eq('id', appointment.id);
+      if (updErr) throw updErr;
+      setLinkedCustomerId(customerId);
+      onCustomerLinked?.(customerId);
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : 'Failed to save to customer book.');
+    } finally {
+      setSavingToBook(false);
+    }
+  }
+
+  async function handleLinkExisting(customer: Customer) {
+    setSavingToBook(true);
+    setLinkError('');
+    try {
+      const { error: updErr } = await supabase
+        .from('appointments')
+        .update({ customer_id: customer.id, updated_at: new Date().toISOString() })
+        .eq('id', appointment.id);
+      if (updErr) throw updErr;
+      setLinkedCustomerId(customer.id);
+      setShowLinkSearch(false);
+      onCustomerLinked?.(customer.id);
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : 'Failed to link customer.');
+    } finally {
+      setSavingToBook(false);
     }
   }
 
@@ -242,6 +311,83 @@ export function AppointmentDetails({
             <div className="border-t border-slate-100 pt-3">
               <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">Notes</div>
               <div className="text-sm text-slate-600 whitespace-pre-wrap">{appointment.notes}</div>
+            </div>
+          )}
+
+          {/* Customer book status */}
+          {linkedCustomerId ? (
+            <div className="border-t border-slate-100 pt-3">
+              <div className="inline-flex items-center gap-1.5 text-sm text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-3 py-1.5 font-medium">
+                <BookUser className="w-4 h-4" />
+                Saved in Customer Book
+              </div>
+            </div>
+          ) : (
+            <div className="border-t border-slate-100 pt-3 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleSaveToBook}
+                  disabled={savingToBook}
+                  className="flex items-center gap-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 font-medium py-2 px-3 rounded-lg transition text-sm disabled:opacity-50"
+                >
+                  {savingToBook ? <Loader2 className="w-4 h-4 animate-spin" /> : <BookUser className="w-4 h-4" />}
+                  Save to Customer Book
+                </button>
+                <button
+                  onClick={() => setShowLinkSearch(!showLinkSearch)}
+                  disabled={savingToBook}
+                  className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 font-medium py-2 px-3 rounded-lg transition text-sm disabled:opacity-50"
+                >
+                  <Link2 className="w-4 h-4" />
+                  Link Existing
+                </button>
+              </div>
+              {linkError && (
+                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{linkError}</div>
+              )}
+              {showLinkSearch && (
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={linkQuery}
+                      onChange={(e) => {
+                        setLinkQuery(e.target.value);
+                        if (e.target.value.trim().length >= 1) {
+                          setLinkLoading(true);
+                          searchCustomers(e.target.value).then(r => { setLinkResults(r); setLinkLoading(false); }).catch(() => { setLinkResults([]); setLinkLoading(false); });
+                        } else {
+                          setLinkResults([]);
+                        }
+                      }}
+                      placeholder="Search customers by name, phone, or email..."
+                      className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
+                    />
+                    {linkLoading && (
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                        <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
+                      </div>
+                    )}
+                  </div>
+                  {linkResults.length > 0 && (
+                    <div className="border border-slate-200 rounded-lg max-h-40 overflow-y-auto">
+                      {linkResults.map(c => (
+                        <button
+                          key={c.id}
+                          onClick={() => handleLinkExisting(c)}
+                          className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-b-0 text-sm"
+                        >
+                          <div className="font-medium text-slate-700">{c.full_name}</div>
+                          <div className="text-xs text-slate-400">
+                            {c.phone && c.phone} {c.phone && c.email && '· '} {c.email && c.email}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus, ReminderAttempt, DeliveryAlert, DeliveryFailureWithDetails, FocusSession, FocusSessionTask, Customer } from '@/types';
+import { isDummyPhoneNumber } from '@/lib/dateUtils';
 
 export interface AuditEntry {
   id: string;
@@ -732,4 +733,133 @@ export async function deleteCustomer(id: string, actorId: string | null): Promis
   if (deleted) {
     await logAudit('DELETE', 'customers', `Deleted customer "${deleted.full_name}"`, deleted as unknown as Record<string, unknown>, null, actorId);
   }
+}
+
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Finds an existing customer that matches the given name/phone/email.
+ * Matching priority:
+ *   1. Valid, non-dummy 10-digit phone number
+ *   2. Lowercase email (if non-empty)
+ *   3. Exact case-insensitive normalized full_name — only when BOTH phone and
+ *      email are absent/invalid (avoids false matches when real identifiers exist)
+ */
+export async function findMatchingCustomer(
+  name: string,
+  phone: string,
+  email: string,
+): Promise<Customer | null> {
+  const trimmedName = (name || '').trim();
+  const trimmedEmail = (email || '').trim();
+
+  // 1. Phone match (valid, non-dummy 10-digit)
+  const phoneDigits = (phone || '').replace(/\D/g, '');
+  const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
+  if (hasRealPhone) {
+    const { data } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('phone', phone)
+      .maybeSingle<Customer>();
+    if (data) return data;
+  }
+
+  // 2. Email match
+  if (trimmedEmail) {
+    const { data } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('email', trimmedEmail.toLowerCase())
+      .maybeSingle<Customer>();
+    if (data) return data;
+  }
+
+  // 3. Name match — only when no real phone or email available
+  if (!hasRealPhone && !trimmedEmail && trimmedName) {
+    const { data } = await supabase
+      .from('customers')
+      .select('*')
+      .ilike('full_name', trimmedName)
+      .maybeSingle<Customer>();
+    if (data && normalizeName(data.full_name) === normalizeName(trimmedName)) {
+      return data;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Merges duplicateId into keepId: fills blank fields on keepId from duplicateId,
+ * reassigns all appointments pointing at duplicateId to keepId, then deletes duplicateId.
+ */
+export async function mergeCustomers(keepId: string, duplicateId: string, actorId: string | null): Promise<Customer> {
+  if (keepId === duplicateId) throw new Error('Cannot merge a customer into itself.');
+
+  const { data: keep, error: keepErr } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('id', keepId)
+    .maybeSingle<Customer>();
+  if (keepErr) throw keepErr;
+  if (!keep) throw new Error('Target customer not found.');
+
+  const { data: dup, error: dupErr } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('id', duplicateId)
+    .maybeSingle<Customer>();
+  if (dupErr) throw dupErr;
+  if (!dup) throw new Error('Duplicate customer not found.');
+
+  // Fill blank fields on keep from dup
+  const updates: Partial<Customer> = {};
+  const blankableFields: (keyof Customer)[] = ['phone', 'email', 'notes', 'address_line1', 'address_line2', 'city', 'state', 'zip_code'];
+  for (const field of blankableFields) {
+    const keepVal = keep[field] as string;
+    const dupVal = dup[field] as string;
+    if ((!keepVal || keepVal === '') && dupVal && dupVal !== '') {
+      (updates as Record<string, unknown>)[field] = dupVal;
+    }
+  }
+  if (!keep.date_of_birth && dup.date_of_birth) {
+    updates.date_of_birth = dup.date_of_birth;
+  }
+
+  if (Object.keys(updates).length > 0) {
+    updates.updated_at = new Date().toISOString();
+    const { error: updErr } = await supabase
+      .from('customers')
+      .update(updates)
+      .eq('id', keepId);
+    if (updErr) throw updErr;
+  }
+
+  // Reassign appointments
+  const { error: apptErr } = await supabase
+    .from('appointments')
+    .update({ customer_id: keepId, updated_at: new Date().toISOString() })
+    .eq('customer_id', duplicateId);
+  if (apptErr) throw apptErr;
+
+  // Delete duplicate
+  const { error: delErr } = await supabase
+    .from('customers')
+    .delete()
+    .eq('id', duplicateId);
+  if (delErr) throw delErr;
+
+  await logAudit('MERGE', 'customers', `Merged customer "${dup.full_name}" into "${keep.full_name}"`, dup as unknown as Record<string, unknown>, keep as unknown as Record<string, unknown>, actorId);
+
+  // Return refreshed keep row
+  const { data: refreshed, error: refErr } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('id', keepId)
+    .single<Customer>();
+  if (refErr) throw refErr;
+  return refreshed;
 }

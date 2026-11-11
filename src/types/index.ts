@@ -84,6 +84,12 @@ export interface Customer {
   assigned_user_id: string | null;
   is_global: boolean;
   send_whatsapp: boolean;
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  state: string;
+  zip_code: string;
+  date_of_birth: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
