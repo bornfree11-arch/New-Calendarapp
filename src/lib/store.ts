@@ -679,16 +679,22 @@ export async function getCustomers(): Promise<Customer[]> {
 }
 
 export async function searchCustomers(query: string): Promise<Customer[]> {
-  if (!query.trim()) return getCustomers();
-  const { data, error } = await supabase
-    .from('customers')
-    .select('*')
-    .or(`full_name.ilike.%${query}%,phone.ilike.%${query}%,email.ilike.%${query}%`)
-    .order('full_name', { ascending: true })
-    .limit(50);
-  if (error) throw error;
-  return (data || []) as Customer[];
+  const all = await getCustomers();
+  const q = query.trim().toLowerCase();
+  if (!q) return all;
+  const digitsOnly = q.replace(/\D/g, '');
+  return all
+    .filter((c) => {
+      const nameMatch = (c.full_name || '').toLowerCase().includes(q);
+      const emailMatch = (c.email || '').toLowerCase().includes(q);
+      const phoneMatch =
+        (c.phone || '').toLowerCase().includes(q) ||
+        (digitsOnly.length >= 2 && (c.phone || '').replace(/\D/g, '').includes(digitsOnly));
+      return nameMatch || emailMatch || phoneMatch;
+    })
+    .slice(0, 50);
 }
+
 
 export async function saveCustomer(customer: Partial<Customer> & { id?: string }, actorId: string | null): Promise<Customer> {
   if (customer.id) {
