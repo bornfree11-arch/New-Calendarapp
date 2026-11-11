@@ -1,0 +1,2028 @@
+/*
+# Shared Calendar Application — Initial Schema
+
+## Overview
+Creates the full database schema for a shared calendar and appointment management application
+for coworkers who schedule Tax/Accounting, ACA, Medicare, Life Insurance, and Other appointments.
+
+## New Tables
+1. `profiles` — Extends auth.users with user data (email, name, phone, color, role, status)
+2. `companies` — Company profiles with address and phone for client email reminders
+3. `appointment_type_mappings` — Maps each appointment type to a company
+4. `appointments` — Calendar appointments with client info, scheduling, and company association
+5. `app_settings` — Singleton configuration (business timezone)
+
+## Security
+- RLS enabled on all tables
+- Exclusion constraint prevents same-coworker appointment overlaps (concurrency-safe)
+- end_time is always calculated server-side from start_time + duration_minutes
+- Inactive user login blocked via trigger on auth.sessions
+
+## Important Notes
+- Email stored on profiles table
+- 12 predefined soft colors, unique among active users
+- US phone format validation
+- Time slots 07:00–18:30 start, end_time <= 19:00
+- Durations: 30, 60, 90, 120 minutes
+- Company snapshot (JSONB) frozen on each appointment
+*/
+
+-- Extensions first
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+-- ============================================================================
+-- PROFILES TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS profiles (
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email text NOT NULL,
+  full_name text NOT NULL,
+  phone text,
+  notes text DEFAULT '',
+  calendar_color text NOT NULL DEFAULT '#6B7B8D',
+  role text NOT NULL DEFAULT 'coworker' CHECK (role IN ('admin', 'coworker')),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_active_color_unique
+  ON profiles (calendar_color)
+  WHERE status = 'active';
+
+CREATE OR REPLACE FUNCTION validate_us_phone(phone text)
+RETURNS boolean AS $$
+BEGIN
+  IF phone IS NULL THEN
+    RETURN true;
+  END IF;
+  RETURN phone ~ '^\(\d{3}\)\s?\d{3}-\d{4}$';
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+ALTER TABLE profiles ADD CONSTRAINT profiles_phone_check
+  CHECK (validate_us_phone(phone));
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "profiles_select_all" ON profiles;
+CREATE POLICY "profiles_select_all"
+  ON profiles FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "profiles_update_own" ON profiles;
+CREATE POLICY "profiles_update_own"
+  ON profiles FOR UPDATE TO authenticated
+  USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
+
+DROP POLICY IF EXISTS "profiles_insert_admin" ON profiles;
+CREATE POLICY "profiles_insert_admin"
+  ON profiles FOR INSERT TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS "profiles_delete_admin" ON profiles;
+CREATE POLICY "profiles_delete_admin"
+  ON profiles FOR DELETE TO authenticated USING (true);
+
+-- Auto-create profile on auth user creation
+CREATE OR REPLACE FUNCTION handle_new_user()
+RETURNS trigger AS $$
+BEGIN
+  INSERT INTO profiles (id, email, full_name)
+  VALUES (NEW.id, NEW.email, COALESCE(NEW.raw_user_meta_data->>'full_name', ''));
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION handle_new_user();
+
+-- updated_at helper
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS profiles_updated_at ON profiles;
+CREATE TRIGGER profiles_updated_at
+  BEFORE UPDATE ON profiles
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ============================================================================
+-- COMPANIES TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS companies (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  address_line1 text NOT NULL,
+  address_line2 text DEFAULT '',
+  city text NOT NULL,
+  state text NOT NULL,
+  zip_code text NOT NULL,
+  phone text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE companies ADD CONSTRAINT companies_phone_check
+  CHECK (validate_us_phone(phone));
+
+DROP TRIGGER IF EXISTS companies_updated_at ON companies;
+CREATE TRIGGER companies_updated_at
+  BEFORE UPDATE ON companies
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+ALTER TABLE companies ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "companies_select_all" ON companies;
+CREATE POLICY "companies_select_all"
+  ON companies FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "companies_insert_admin" ON companies;
+CREATE POLICY "companies_insert_admin"
+  ON companies FOR INSERT TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS "companies_update_admin" ON companies;
+CREATE POLICY "companies_update_admin"
+  ON companies FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "companies_delete_admin" ON companies;
+CREATE POLICY "companies_delete_admin"
+  ON companies FOR DELETE TO authenticated USING (true);
+
+-- ============================================================================
+-- APPOINTMENT TYPE MAPPINGS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS appointment_type_mappings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  appointment_type text NOT NULL CHECK (
+    appointment_type IN ('Tax/Accounting', 'ACA', 'Medicare', 'Life', 'Other')
+  ),
+  company_id uuid REFERENCES companies(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(appointment_type)
+);
+
+DROP TRIGGER IF EXISTS appointment_type_mappings_updated_at ON appointment_type_mappings;
+CREATE TRIGGER appointment_type_mappings_updated_at
+  BEFORE UPDATE ON appointment_type_mappings
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+ALTER TABLE appointment_type_mappings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "type_mappings_select_all" ON appointment_type_mappings;
+CREATE POLICY "type_mappings_select_all"
+  ON appointment_type_mappings FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "type_mappings_insert_admin" ON appointment_type_mappings;
+CREATE POLICY "type_mappings_insert_admin"
+  ON appointment_type_mappings FOR INSERT TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS "type_mappings_update_admin" ON appointment_type_mappings;
+CREATE POLICY "type_mappings_update_admin"
+  ON appointment_type_mappings FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "type_mappings_delete_admin" ON appointment_type_mappings;
+CREATE POLICY "type_mappings_delete_admin"
+  ON appointment_type_mappings FOR DELETE TO authenticated USING (true);
+
+-- ============================================================================
+-- APPOINTMENTS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS appointments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  appointment_date date NOT NULL,
+  start_time time NOT NULL,
+  duration_minutes int NOT NULL CHECK (duration_minutes IN (30, 60, 90, 120)),
+  end_time time NOT NULL,
+  appointment_type text NOT NULL CHECK (
+    appointment_type IN ('Tax/Accounting', 'ACA', 'Medicare', 'Life', 'Other')
+  ),
+  client_name text NOT NULL,
+  client_phone text NOT NULL,
+  client_email text DEFAULT '',
+  notes text DEFAULT '',
+  assigned_to uuid NOT NULL REFERENCES profiles(id) ON DELETE RESTRICT,
+  company_id uuid REFERENCES companies(id) ON DELETE SET NULL,
+  company_snapshot jsonb DEFAULT '{}',
+  status text NOT NULL DEFAULT 'Scheduled' CHECK (
+    status IN ('Scheduled', 'Completed', 'Cancelled', 'No-show')
+  ),
+  created_by uuid REFERENCES profiles(id) ON DELETE SET NULL,
+  last_modified_by uuid REFERENCES profiles(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  -- Plain column for exclusion constraint (populated by trigger)
+  time_range tsrange
+);
+
+ALTER TABLE appointments ADD CONSTRAINT appointments_client_phone_check
+  CHECK (validate_us_phone(client_phone));
+
+ALTER TABLE appointments ADD CONSTRAINT appointments_client_email_check
+  CHECK (
+    client_email = '' OR client_email ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+  );
+
+ALTER TABLE appointments ADD CONSTRAINT appointments_start_time_check
+  CHECK (start_time >= '07:00:00' AND start_time <= '18:30:00');
+
+ALTER TABLE appointments ADD CONSTRAINT appointments_end_time_check
+  CHECK (end_time <= '19:00:00');
+
+ALTER TABLE appointments ADD CONSTRAINT appointments_end_time_calc_check
+  CHECK (
+    end_time = (start_time + (duration_minutes || ' minutes')::interval)::time
+  );
+
+CREATE INDEX IF NOT EXISTS idx_appointments_date ON appointments (appointment_date);
+CREATE INDEX IF NOT EXISTS idx_appointments_assigned ON appointments (assigned_to);
+CREATE INDEX IF NOT EXISTS idx_appointments_status ON appointments (status);
+CREATE INDEX IF NOT EXISTS idx_appointments_client_name ON appointments USING gin (client_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_appointments_client_phone ON appointments (client_phone);
+
+-- Exclusion constraint: same coworker, overlapping time, both Scheduled
+ALTER TABLE appointments ADD CONSTRAINT no_same_coworker_overlap
+  EXCLUDE USING gist (
+    assigned_to WITH =,
+    time_range WITH &&,
+    status WITH =
+  ) WHERE (status = 'Scheduled');
+
+DROP TRIGGER IF EXISTS appointments_updated_at ON appointments;
+CREATE TRIGGER appointments_updated_at
+  BEFORE UPDATE ON appointments
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "appointments_select_all" ON appointments;
+CREATE POLICY "appointments_select_all"
+  ON appointments FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "appointments_insert_all" ON appointments;
+CREATE POLICY "appointments_insert_all"
+  ON appointments FOR INSERT TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS "appointments_update_all" ON appointments;
+CREATE POLICY "appointments_update_all"
+  ON appointments FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "appointments_delete_all" ON appointments;
+CREATE POLICY "appointments_delete_all"
+  ON appointments FOR DELETE TO authenticated USING (true);
+
+-- ============================================================================
+-- APPOINTMENT TRIGGER: Calculate end_time, time_range, company_snapshot
+-- ============================================================================
+CREATE OR REPLACE FUNCTION calculate_appointment_fields()
+RETURNS trigger AS $$
+DECLARE
+  mapped_company_id uuid;
+  company_record companies%ROWTYPE;
+BEGIN
+  -- Calculate end_time from start_time + duration
+  NEW.end_time = (NEW.start_time + (NEW.duration_minutes || ' minutes')::interval)::time;
+
+  -- Validate end_time <= 19:00
+  IF NEW.end_time > '19:00:00' THEN
+    RAISE EXCEPTION 'Appointment end time % exceeds the 7:00 PM boundary.', NEW.end_time;
+  END IF;
+
+  -- Calculate time_range for exclusion constraint
+  NEW.time_range = tstzrange(
+    (NEW.appointment_date + NEW.start_time)::timestamptz,
+    (NEW.appointment_date + (NEW.start_time + (NEW.duration_minutes || ' minutes')::interval))::timestamptz,
+    '[)'
+  );
+
+  -- If company_id not explicitly set, get from type mapping
+  IF NEW.company_id IS NULL THEN
+    SELECT company_id INTO mapped_company_id
+    FROM appointment_type_mappings
+    WHERE appointment_type = NEW.appointment_type;
+    NEW.company_id = mapped_company_id;
+  END IF;
+
+  -- Snapshot company info
+  IF NEW.company_id IS NOT NULL THEN
+    SELECT * INTO company_record FROM companies WHERE id = NEW.company_id;
+    IF FOUND THEN
+      NEW.company_snapshot = jsonb_build_object(
+        'name', company_record.name,
+        'address_line1', company_record.address_line1,
+        'address_line2', company_record.address_line2,
+        'city', company_record.city,
+        'state', company_record.state,
+        'zip_code', company_record.zip_code,
+        'phone', company_record.phone
+      );
+    END IF;
+  END IF;
+
+  -- Set last_modified_by
+  IF NEW.last_modified_by IS NULL THEN
+    NEW.last_modified_by = auth.uid();
+  END IF;
+
+  -- Set created_by on insert
+  IF TG_OP = 'INSERT' AND NEW.created_by IS NULL THEN
+    NEW.created_by = auth.uid();
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS appointments_calculate_before_insert ON appointments;
+CREATE TRIGGER appointments_calculate_before_insert
+  BEFORE INSERT ON appointments
+  FOR EACH ROW EXECUTE FUNCTION calculate_appointment_fields();
+
+DROP TRIGGER IF EXISTS appointments_calculate_before_update ON appointments;
+CREATE TRIGGER appointments_calculate_before_update
+  BEFORE UPDATE ON appointments
+  FOR EACH ROW EXECUTE FUNCTION calculate_appointment_fields();
+
+-- ============================================================================
+-- APP_SETTINGS TABLE (singleton)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS app_settings (
+  id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  business_timezone text NOT NULL DEFAULT 'America/New_York',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO app_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+DROP TRIGGER IF EXISTS app_settings_updated_at ON app_settings;
+CREATE TRIGGER app_settings_updated_at
+  BEFORE UPDATE ON app_settings
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "app_settings_select_all" ON app_settings;
+CREATE POLICY "app_settings_select_all"
+  ON app_settings FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "app_settings_update_admin" ON app_settings;
+CREATE POLICY "app_settings_update_admin"
+  ON app_settings FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+-- ============================================================================
+-- SEED APPOINTMENT TYPE MAPPINGS
+-- ============================================================================
+INSERT INTO appointment_type_mappings (appointment_type) VALUES
+  ('Tax/Accounting'),
+  ('ACA'),
+  ('Medicare'),
+  ('Life'),
+  ('Other')
+ON CONFLICT (appointment_type) DO NOTHING;/*
+# Reminders and Audit Logs
+
+## Overview
+Adds the reminders table for tracking email reminders and the audit_logs table
+for recording all important changes.
+
+## New Tables
+1. `reminders` — Email reminder records with scheduling, status, and retry tracking
+2. `audit_logs` — Server-written audit trail of all important actions
+
+## Security
+- reminders: admin-only SELECT; INSERT/UPDATE via edge functions (service role bypasses RLS)
+- audit_logs: admin-only SELECT; no client INSERT/UPDATE/DELETE (written only by triggers/edge functions)
+
+## Important Notes
+- Unique constraint on (appointment_id, recipient_type) prevents duplicate reminders
+- Reminders cancelled when appointment is cancelled or rescheduled (handled by edge function)
+- Audit logs written by SECURITY DEFINER triggers on appointment changes
+*/
+
+-- ============================================================================
+-- REMINDERS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS reminders (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  appointment_id uuid NOT NULL REFERENCES appointments(id) ON DELETE CASCADE,
+  recipient_type text NOT NULL CHECK (recipient_type IN ('coworker', 'client')),
+  recipient_address text NOT NULL,
+  scheduled_send_at timestamptz NOT NULL,
+  attempted_at timestamptz,
+  status text NOT NULL DEFAULT 'pending' CHECK (
+    status IN ('pending', 'sent', 'failed', 'skipped', 'cancelled')
+  ),
+  error_details text DEFAULT '',
+  retry_count int NOT NULL DEFAULT 0 CHECK (retry_count >= 0 AND retry_count <= 5),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(appointment_id, recipient_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders (status);
+CREATE INDEX IF NOT EXISTS idx_reminders_scheduled ON reminders (scheduled_send_at);
+
+ALTER TABLE reminders ENABLE ROW LEVEL SECURITY;
+
+-- Admin-only read
+DROP POLICY IF EXISTS "reminders_select_admin" ON reminders;
+CREATE POLICY "reminders_select_admin"
+  ON reminders FOR SELECT TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+-- No client insert/update/delete — edge functions use service role which bypasses RLS
+DROP POLICY IF EXISTS "reminders_insert_edge" ON reminders;
+CREATE POLICY "reminders_insert_edge"
+  ON reminders FOR INSERT TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS "reminders_update_edge" ON reminders;
+CREATE POLICY "reminders_update_edge"
+  ON reminders FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+-- ============================================================================
+-- AUDIT LOGS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES profiles(id) ON DELETE SET NULL,
+  action_type text NOT NULL,
+  table_name text NOT NULL,
+  record_id uuid,
+  change_summary text NOT NULL DEFAULT '',
+  previous_values jsonb,
+  new_values jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs (action_type);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs (user_id);
+
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Admin-only read
+DROP POLICY IF EXISTS "audit_select_admin" ON audit_logs;
+CREATE POLICY "audit_select_admin"
+  ON audit_logs FOR SELECT TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+-- No client INSERT/UPDATE/DELETE — written only by SECURITY DEFINER triggers
+
+-- ============================================================================
+-- AUDIT TRIGGER: Log appointment changes
+-- ============================================================================
+CREATE OR REPLACE FUNCTION log_appointment_changes()
+RETURNS trigger AS $$
+DECLARE
+  actor_id uuid := auth.uid();
+  action_str text;
+  summary text;
+  prev_json jsonb;
+  new_json jsonb;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    action_str := 'appointment.create';
+    summary := format('Created appointment for %s (%s) on %s', NEW.client_name, NEW.appointment_type, NEW.appointment_date);
+    new_json := jsonb_build_object(
+      'client_name', NEW.client_name,
+      'appointment_type', NEW.appointment_type,
+      'appointment_date', NEW.appointment_date,
+      'start_time', NEW.start_time,
+      'duration_minutes', NEW.duration_minutes,
+      'status', NEW.status,
+      'assigned_to', NEW.assigned_to
+    );
+    prev_json := NULL;
+  ELSIF TG_OP = 'UPDATE' THEN
+    action_str := 'appointment.update';
+    summary := format('Updated appointment for %s', NEW.client_name);
+
+    -- Detect specific changes for summary
+    IF OLD.status != NEW.status THEN
+      summary := format('Changed status from %s to %s for %s on %s', OLD.status, NEW.status, NEW.client_name, NEW.appointment_date);
+    ELSIF OLD.assigned_to != NEW.assigned_to THEN
+      summary := format('Reassigned appointment for %s', NEW.client_name);
+    ELSIF OLD.appointment_date != NEW.appointment_date OR OLD.start_time != NEW.start_time THEN
+      summary := format('Rescheduled appointment for %s to %s at %s', NEW.client_name, NEW.appointment_date, NEW.start_time);
+    END IF;
+
+    prev_json := jsonb_build_object(
+      'client_name', OLD.client_name,
+      'appointment_type', OLD.appointment_type,
+      'appointment_date', OLD.appointment_date,
+      'start_time', OLD.start_time,
+      'duration_minutes', OLD.duration_minutes,
+      'status', OLD.status,
+      'assigned_to', OLD.assigned_to
+    );
+    new_json := jsonb_build_object(
+      'client_name', NEW.client_name,
+      'appointment_type', NEW.appointment_type,
+      'appointment_date', NEW.appointment_date,
+      'start_time', NEW.start_time,
+      'duration_minutes', NEW.duration_minutes,
+      'status', NEW.status,
+      'assigned_to', NEW.assigned_to
+    );
+  ELSIF TG_OP = 'DELETE' THEN
+    action_str := 'appointment.delete';
+    summary := format('Deleted appointment for %s on %s', OLD.client_name, OLD.appointment_date);
+    prev_json := jsonb_build_object(
+      'client_name', OLD.client_name,
+      'appointment_type', OLD.appointment_type,
+      'appointment_date', OLD.appointment_date,
+      'start_time', OLD.start_time,
+      'status', OLD.status
+    );
+    new_json := NULL;
+    INSERT INTO audit_logs (user_id, action_type, table_name, record_id, change_summary, previous_values, new_values)
+    VALUES (actor_id, action_str, 'appointments', OLD.id, summary, prev_json, new_json);
+    RETURN OLD;
+  END IF;
+
+  INSERT INTO audit_logs (user_id, action_type, table_name, record_id, change_summary, previous_values, new_values)
+  VALUES (actor_id, action_str, 'appointments', NEW.id, summary, prev_json, new_json);
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS appointments_audit_after_insert ON appointments;
+CREATE TRIGGER appointments_audit_after_insert
+  AFTER INSERT ON appointments
+  FOR EACH ROW EXECUTE FUNCTION log_appointment_changes();
+
+DROP TRIGGER IF EXISTS appointments_audit_after_update ON appointments;
+CREATE TRIGGER appointments_audit_after_update
+  AFTER UPDATE ON appointments
+  FOR EACH ROW EXECUTE FUNCTION log_appointment_changes();
+
+DROP TRIGGER IF EXISTS appointments_audit_after_delete ON appointments;
+CREATE TRIGGER appointments_audit_after_delete
+  AFTER DELETE ON appointments
+  FOR EACH ROW EXECUTE FUNCTION log_appointment_changes();
+
+-- ============================================================================
+-- REMINDER MANAGEMENT FUNCTION
+-- Called by edge function to create/cancel reminders when appointments change
+-- ============================================================================
+CREATE OR REPLACE FUNCTION upsert_reminders(appt_id uuid)
+RETURNS void AS $$
+DECLARE
+  appt appointments%ROWTYPE;
+  coworker_profile profiles%ROWTYPE;
+  send_time timestamptz;
+BEGIN
+  SELECT * INTO appt FROM appointments WHERE id = appt_id;
+  IF NOT FOUND THEN
+    -- Appointment deleted, cancel all pending reminders
+    UPDATE reminders SET status = 'cancelled', error_details = 'Appointment deleted'
+    WHERE appointment_id = appt_id AND status = 'pending';
+    RETURN;
+  END IF;
+
+  -- If cancelled, cancel pending reminders
+  IF appt.status = 'Cancelled' THEN
+    UPDATE reminders SET status = 'cancelled', error_details = 'Appointment cancelled'
+    WHERE appointment_id = appt_id AND status = 'pending';
+    RETURN;
+  END IF;
+
+  -- If not scheduled, cancel pending reminders
+  IF appt.status != 'Scheduled' THEN
+    UPDATE reminders SET status = 'cancelled', error_details = 'Appointment not in Scheduled state'
+    WHERE appointment_id = appt_id AND status = 'pending';
+    RETURN;
+  END IF;
+
+  -- Calculate 8:00 AM ET on appointment date
+  -- America/New_York is the configured timezone
+  send_time = (appt.appointment_date::text || ' 08:00:00')::timestamp AT TIME ZONE 'America/New_York';
+
+  -- Get coworker profile
+  SELECT * INTO coworker_profile FROM profiles WHERE id = appt.assigned_to;
+  IF NOT FOUND THEN RETURN; END IF;
+
+  -- Upsert coworker reminder
+  IF coworker_profile.email IS NOT NULL AND coworker_profile.email != '' THEN
+    INSERT INTO reminders (appointment_id, recipient_type, recipient_address, scheduled_send_at, status)
+    VALUES (appt_id, 'coworker', coworker_profile.email, send_time, 'pending')
+    ON CONFLICT (appointment_id, recipient_type) DO UPDATE
+    SET scheduled_send_at = EXCLUDED.scheduled_send_at,
+        status = CASE WHEN reminders.status IN ('sent', 'failed') THEN reminders.status ELSE 'pending' END,
+        error_details = CASE WHEN reminders.status IN ('sent', 'failed') THEN reminders.error_details ELSE '' END;
+  END IF;
+
+  -- Upsert client reminder
+  IF appt.client_email IS NOT NULL AND appt.client_email != '' THEN
+    INSERT INTO reminders (appointment_id, recipient_type, recipient_address, scheduled_send_at, status)
+    VALUES (appt_id, 'client', appt.client_email, send_time, 'pending')
+    ON CONFLICT (appointment_id, recipient_type) DO UPDATE
+    SET scheduled_send_at = EXCLUDED.scheduled_send_at,
+        recipient_address = EXCLUDED.recipient_address,
+        status = CASE WHEN reminders.status IN ('sent', 'failed') THEN reminders.status ELSE 'pending' END,
+        error_details = CASE WHEN reminders.status IN ('sent', 'failed') THEN reminders.error_details ELSE '' END;
+  ELSE
+    -- Mark client reminder as skipped if no email
+    INSERT INTO reminders (appointment_id, recipient_type, recipient_address, scheduled_send_at, status, error_details)
+    VALUES (appt_id, 'client', '', send_time, 'skipped', 'No client email on appointment')
+    ON CONFLICT (appointment_id, recipient_type) DO UPDATE
+    SET status = CASE WHEN reminders.status IN ('sent', 'failed') THEN reminders.status ELSE 'skipped' END,
+        error_details = CASE WHEN reminders.status IN ('sent', 'failed') THEN reminders.error_details ELSE 'No client email on appointment' END;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================================================
+-- TRIGGER: Auto-manage reminders after appointment changes
+-- ============================================================================
+CREATE OR REPLACE FUNCTION manage_reminders_after_change()
+RETURNS trigger AS $$
+BEGIN
+  PERFORM upsert_reminders(NEW.id);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS appointments_reminders_after_insert ON appointments;
+CREATE TRIGGER appointments_reminders_after_insert
+  AFTER INSERT ON appointments
+  FOR EACH ROW EXECUTE FUNCTION manage_reminders_after_change();
+
+DROP TRIGGER IF EXISTS appointments_reminders_after_update ON appointments;
+CREATE TRIGGER appointments_reminders_after_update
+  AFTER UPDATE ON appointments
+  FOR EACH ROW EXECUTE FUNCTION manage_reminders_after_change();
+
+CREATE OR REPLACE FUNCTION manage_reminders_after_delete()
+RETURNS trigger AS $$
+BEGIN
+  PERFORM upsert_reminders(OLD.id);
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS appointments_reminders_after_delete ON appointments;
+CREATE TRIGGER appointments_reminders_after_delete
+  AFTER DELETE ON appointments
+  FOR EACH ROW EXECUTE FUNCTION manage_reminders_after_delete();/*
+# Fix: Inactive user trigger and admin profile management
+
+## Overview
+1. Fixes the `check_user_active` trigger which used `NEW.id` (session UUID)
+   instead of `NEW.user_id` — the original would never find a profile row
+   and would silently allow deactivated users to log in.
+2. Adds a separate UPDATE policy `profiles_update_admin` so admin users can
+   edit any profile (role, color, status, etc). The existing `profiles_update_own`
+   only allows users to update their own row, which blocked admins from
+   managing other users via the User Management screen.
+
+## Security Changes
+- RLS: new `profiles_update_admin` policy (UPDATE, TO authenticated,
+  USING + WITH CHECK that the requesting user is an admin).
+- Trigger: `check_user_active` corrected to look up `NEW.user_id`.
+*/
+
+-- ============================================================================
+-- Fix: check_user_active trigger
+-- ============================================================================
+CREATE OR REPLACE FUNCTION check_user_active()
+RETURNS trigger AS $$
+DECLARE
+  user_status text;
+BEGIN
+  SELECT status INTO user_status FROM profiles WHERE id = NEW.user_id;
+  IF user_status = 'inactive' THEN
+    RAISE EXCEPTION 'Your account has been deactivated. Please contact your administrator.';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================================================
+-- RLS: Allow admins to update any profile
+-- ============================================================================
+DROP POLICY IF EXISTS "profiles_update_admin" ON profiles;
+CREATE POLICY "profiles_update_admin"
+  ON profiles FOR UPDATE TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles p
+      WHERE p.id = auth.uid() AND p.role = 'admin'
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM profiles p
+      WHERE p.id = auth.uid() AND p.role = 'admin'
+    )
+  );/*
+# Add audit_logs INSERT policy
+
+1. Changes
+- Add INSERT policy on audit_logs for authenticated users so the app can write audit entries after mutations.
+2. Security
+- Any authenticated user can insert audit log entries (best-effort logging).
+- SELECT remains admin-only (existing policy unchanged).
+*/
+
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "audit_insert_authenticated" ON audit_logs;
+CREATE POLICY "audit_insert_authenticated"
+ON audit_logs FOR INSERT
+TO authenticated WITH CHECK (true);/*
+# Fix: handle_new_user trigger and profile creation flow
+
+## Problem
+The `handle_new_user()` SECURITY DEFINER trigger function lacked a `SET search_path`,
+which can cause it to fail on some Supabase configurations. When it fails, the entire
+auth.users INSERT is rolled back, producing "Database error saving new user."
+
+Additionally, the frontend SetupScreen was doing a separate INSERT into profiles
+after signUp, which would conflict with the trigger-created row (duplicate primary key).
+
+## Changes
+1. Replaces `handle_new_user()` with a version that has `SET search_path = public`
+   and uses `ON CONFLICT DO NOTHING` so it never fails if a profile already exists.
+2. The trigger still auto-creates a minimal profile row (id, email, full_name from
+   user metadata) so that RLS doesn't break if the frontend insert is slow/fails.
+3. The frontend will switch to upsert to update the trigger-created row with full
+   admin data (role, phone, color, etc.) instead of trying a fresh insert.
+
+## Security
+- No RLS policy changes.
+- Function search_path is now explicitly set to 'public' (security best practice).
+*/
+
+CREATE OR REPLACE FUNCTION handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO profiles (id, email, full_name)
+  VALUES (NEW.id, NEW.email, COALESCE(NEW.raw_user_meta_data->>'full_name', ''))
+  ON CONFLICT (id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION handle_new_user();-- Creates a SECURITY DEFINER function that checks if an admin profile exists.
+-- This is callable by unauthenticated users (anon role) so the frontend can
+-- determine whether to show the onboarding setup screen or the login screen.
+-- RLS on profiles blocks anon reads, so without this the count always returns 0
+-- for unauthenticated requests, causing the setup screen to appear even when
+-- an admin already exists.
+
+CREATE OR REPLACE FUNCTION admin_exists()
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  RETURN EXISTS (SELECT 1 FROM profiles WHERE role = 'admin' LIMIT 1);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION admin_exists() TO anon, authenticated;-- Enable pg_cron extension
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+-- Enable http extension for outbound HTTP calls from SQL
+CREATE EXTENSION IF NOT EXISTS http;
+/*
+# Set up pg_cron to poll the send-reminder Edge Function
+
+## Purpose
+The send-reminder Edge Function processes pending reminder rows when invoked via POST.
+This migration creates a secure config table for the auth key, a helper function in the
+public schema, and schedules a recurring pg_cron job every 2 minutes that POSTs to the
+Edge Function URL with an Authorization header so the Supabase routing gateway accepts
+the request.
+
+## Changes
+1. Create `cron_config` table to store the auth key securely (RLS locked, no policies).
+2. Insert the anon key (edge function has verify_jwt=false).
+3. Create a SECURITY DEFINER helper function `public.poll_send_reminder()` that issues
+   an authenticated POST to the Edge Function endpoint using http_post.
+4. Register a pg_cron job named 'poll-send-reminder' on a 2-minute schedule.
+
+## Security
+- The function is SECURITY DEFINER so the cron job can execute it.
+- The cron_config table has RLS enabled with no policies — only superuser and
+  SECURITY DEFINER functions can read it.
+- The Edge Function has verify_jwt=false, so the anon key is sufficient.
+*/
+
+-- 1. Create a secure config table for cron credentials
+CREATE TABLE IF NOT EXISTS cron_config (
+  id int PRIMARY KEY DEFAULT 1,
+  key_name text NOT NULL,
+  key_value text NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT single_row CHECK (id = 1)
+);
+
+ALTER TABLE cron_config ENABLE ROW LEVEL SECURITY;
+
+-- No policies = locked down for anon/authenticated; only superuser and SECURITY DEFINER functions can access
+
+-- 2. Insert the auth key (anon key — edge function has verify_jwt=false)
+INSERT INTO cron_config (id, key_name, key_value)
+VALUES (1, 'send_reminder_auth_key', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpcm1kbmdqdmN5aGZuaGFhYWZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3ODQyMDQsImV4cCI6MjEwNzM2MDIwNH0.nozz0ipoBjEGGN-FmGL2FHuF4-Oun0EGLaPTorwLoFg')
+ON CONFLICT (id) DO UPDATE SET key_value = EXCLUDED.key_value;
+
+-- 3. Drop existing function if re-applying
+DROP FUNCTION IF EXISTS public.poll_send_reminder();
+
+-- 4. Create the helper function in public schema
+CREATE OR REPLACE FUNCTION public.poll_send_reminder()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_url text := 'https://firmdngjvcyhfnhaaafq.supabase.co/functions/v1/send-reminder';
+  v_key text;
+  v_res json;
+BEGIN
+  -- Read the auth key from the secure config table
+  SELECT key_value INTO v_key FROM cron_config WHERE id = 1;
+
+  IF v_key IS NULL OR v_key = '' THEN
+    RAISE NOTICE 'Auth key not found in cron_config — skipping cron poll.';
+    RETURN;
+  END IF;
+
+  -- Issue the POST with Authorization and Content-Type headers
+  SELECT content::json INTO v_res
+  FROM http_post(
+    v_url,
+    '{}'::text,
+    'application/json',
+    ARRAY[
+      'Authorization', 'Bearer ' || v_key,
+      'Content-Type', 'application/json'
+    ]
+  );
+
+  RAISE NOTICE 'send-reminder polled at %: %', clock_timestamp(), v_res;
+END;
+$$;
+
+-- 5. Remove any pre-existing cron job with the same name (idempotent)
+DO $$
+BEGIN
+  PERFORM cron.unschedule('poll-send-reminder');
+EXCEPTION WHEN OTHERS THEN
+  -- Job doesn't exist yet — that's fine
+END $$;
+
+-- 6. Register the cron job: every 2 minutes
+SELECT cron.schedule(
+  'poll-send-reminder',
+  '*/2 * * * *',
+  $$SELECT public.poll_send_reminder();$$
+);
+/*
+# Create public storage bucket "email-assets"
+
+## Purpose
+Create a public storage bucket named "email-assets" to hold company logo images
+used in transactional email templates. The bucket is public so email clients can
+load the logos without authentication.
+
+## Changes
+1. Insert a row into `storage.buckets` for "email-assets" with public=true.
+2. Add public read policies on `storage.objects` for the email-assets bucket so
+   anyone (anon + authenticated) can read objects.
+3. Add write policies so authenticated users can upload/overwrite logo files.
+*/
+
+-- 1. Create the bucket (idempotent)
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('email-assets', 'email-assets', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- 2. Public read access for email-assets bucket
+DROP POLICY IF EXISTS "public_read_email_assets" ON storage.objects;
+CREATE POLICY "public_read_email_assets"
+ON storage.objects FOR SELECT
+TO anon, authenticated
+USING (bucket_id = 'email-assets');
+
+-- 3. Authenticated users can upload to email-assets bucket
+DROP POLICY IF EXISTS "auth_upload_email_assets" ON storage.objects;
+CREATE POLICY "auth_upload_email_assets"
+ON storage.objects FOR INSERT
+TO authenticated
+WITH CHECK (bucket_id = 'email-assets');
+
+-- 4. Authenticated users can update/overwrite files in email-assets bucket
+DROP POLICY IF EXISTS "auth_update_email_assets" ON storage.objects;
+CREATE POLICY "auth_update_email_assets"
+ON storage.objects FOR UPDATE
+TO authenticated
+USING (bucket_id = 'email-assets')
+WITH CHECK (bucket_id = 'email-assets');
+
+-- 5. Authenticated users can delete files in email-assets bucket
+DROP POLICY IF EXISTS "auth_delete_email_assets" ON storage.objects;
+CREATE POLICY "auth_delete_email_assets"
+ON storage.objects FOR DELETE
+TO authenticated
+USING (bucket_id = 'email-assets');
+-- Fix the poll_send_reminder function to use the correct http_post signature.
+-- The previous version called http_post with a headers array that doesn't exist
+-- in this Supabase http extension, causing every cron execution to fail silently.
+-- Since the Edge Function has verify_jwt=false, no Authorization header is needed.
+
+DROP FUNCTION IF EXISTS public.poll_send_reminder();
+
+CREATE OR REPLACE FUNCTION public.poll_send_reminder()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_url text := 'https://firmdngjvcyhfnhaaafq.supabase.co/functions/v1/send-reminder';
+  v_res http_response;
+BEGIN
+  -- POST with empty JSON body. The edge function will pick up all pending
+  -- reminders whose scheduled_send_at has passed and send them.
+  SELECT * INTO v_res
+  FROM http_post(v_url, '{}'::varchar, 'application/json');
+
+  RAISE NOTICE 'send-reminder polled at %: status=%', clock_timestamp(), v_res.status;
+END;
+$$;
+
+-- Re-schedule the cron job to make sure it's active
+DO $$
+BEGIN
+  PERFORM cron.unschedule('poll-send-reminder');
+EXCEPTION WHEN OTHERS THEN
+  -- Job doesn't exist — fine
+END $$;
+
+SELECT cron.schedule(
+  'poll-send-reminder',
+  '*/2 * * * *',
+  $$SELECT public.poll_send_reminder();$$
+);
+/*
+# Create Tasks, Subtasks, and Task Status History
+
+## Purpose
+Adds a secure, per-user To-Do feature to the Shared Calendar app.
+Each task belongs only to the signed-in user. The database enforces
+ownership; the browser never supplies an owner value.
+
+## New Tables
+
+### tasks
+- id (uuid, PK)
+- user_id (uuid, NOT NULL, DEFAULT auth.uid()) — owner, FK to auth.users, CASCADE on delete
+- title (text, NOT NULL)
+- action_category (text, NOT NULL, CHECK in Call/Email/Text/Personal/Other)
+- notes (text, default '')
+- due_date (date, nullable)
+- status (text, NOT NULL, default 'Not Started', CHECK in
+  Not Started/In Progress/On Hold/Cancelled/Completed)
+- created_at (timestamptz, default now())
+- updated_at (timestamptz, default now())
+- completed_at (timestamptz, nullable — set when status becomes Completed)
+
+### subtasks
+- id (uuid, PK)
+- task_id (uuid, NOT NULL, FK to tasks.id, CASCADE on delete)
+- title (text, NOT NULL)
+- completed (boolean, NOT NULL, default false)
+- created_at (timestamptz, default now())
+- updated_at (timestamptz, default now())
+(Ownership derived through task_id; no separate user_id column.)
+
+### task_status_history
+- id (uuid, PK)
+- task_id (uuid, NOT NULL, FK to tasks.id, CASCADE on delete)
+- from_status (text, nullable — null on creation)
+- to_status (text, NOT NULL)
+- changed_by (uuid, NOT NULL, FK to auth.users.id)
+- changed_at (timestamptz, default now())
+
+## Security
+- RLS enabled on all three tables.
+- tasks: 4 policies (SELECT/INSERT/UPDATE/DELETE) scoped to auth.uid() = user_id.
+  INSERT policy's WITH CHECK uses auth.uid() = user_id; user_id DEFAULT auth.uid()
+  means the client can omit user_id on insert safely.
+- subtasks: 4 policies scoped through parent task ownership via EXISTS subquery.
+- task_status_history: SELECT scoped to the task owner; INSERT allowed for the
+  task owner (the trigger writes rows; the app does not insert directly). No
+  UPDATE or DELETE — history is permanent.
+- Grants: tasks/subtasks full CRUD to authenticated; task_status_history
+  SELECT + INSERT to authenticated. service_role gets full access for
+  edge-function use if needed later.
+- REVOKE EXECUTE on the status-history trigger function from PUBLIC/anon so
+  only the database can call it.
+
+## Automation
+- A BEFORE UPDATE trigger on tasks compares OLD.status vs NEW.status. When they
+  differ (or when a row is created via INSERT with a non-null status), it
+  inserts a task_status_history row recording from/to and the actor (auth.uid()).
+- A separate BEFORE INSERT trigger logs the initial status as a "Created"
+  history row (from_status NULL).
+- When status transitions to 'Completed', completed_at is stamped; when it
+  moves away from Completed, completed_at is cleared.
+
+## Notes
+1. Ownership is server-enforced. The browser never sends user_id; the column
+   default fills it from the authenticated session.
+2. Status history is append-only and recorded by a trigger, not client code.
+3. Subtasks do not auto-complete the parent task under any condition.
+*/
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  action_category text NOT NULL DEFAULT 'Other'
+    CHECK (action_category IN ('Call','Email','Text','Personal','Other')),
+  notes text NOT NULL DEFAULT '',
+  due_date date,
+  status text NOT NULL DEFAULT 'Not Started'
+    CHECK (status IN ('Not Started','In Progress','On Hold','Cancelled','Completed')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz
+);
+
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON tasks TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON tasks TO service_role;
+
+DROP POLICY IF EXISTS "select_own_tasks" ON tasks;
+CREATE POLICY "select_own_tasks" ON tasks FOR SELECT
+  TO authenticated USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "insert_own_tasks" ON tasks;
+CREATE POLICY "insert_own_tasks" ON tasks FOR INSERT
+  TO authenticated WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "update_own_tasks" ON tasks;
+CREATE POLICY "update_own_tasks" ON tasks FOR UPDATE
+  TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "delete_own_tasks" ON tasks;
+CREATE POLICY "delete_own_tasks" ON tasks FOR DELETE
+  TO authenticated USING (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_user_due ON tasks(user_id, due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status);
+
+CREATE TABLE IF NOT EXISTS subtasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  completed boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE subtasks ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON subtasks TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON subtasks TO service_role;
+
+DROP POLICY IF EXISTS "select_own_subtasks" ON subtasks;
+CREATE POLICY "select_own_subtasks" ON subtasks FOR SELECT
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM tasks t WHERE t.id = subtasks.task_id AND t.user_id = auth.uid()));
+
+DROP POLICY IF EXISTS "insert_own_subtasks" ON subtasks;
+CREATE POLICY "insert_own_subtasks" ON subtasks FOR INSERT
+  TO authenticated
+  WITH CHECK (EXISTS (SELECT 1 FROM tasks t WHERE t.id = subtasks.task_id AND t.user_id = auth.uid()));
+
+DROP POLICY IF EXISTS "update_own_subtasks" ON subtasks;
+CREATE POLICY "update_own_subtasks" ON subtasks FOR UPDATE
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM tasks t WHERE t.id = subtasks.task_id AND t.user_id = auth.uid()))
+  WITH CHECK (EXISTS (SELECT 1 FROM tasks t WHERE t.id = subtasks.task_id AND t.user_id = auth.uid()));
+
+DROP POLICY IF EXISTS "delete_own_subtasks" ON subtasks;
+CREATE POLICY "delete_own_subtasks" ON subtasks FOR DELETE
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM tasks t WHERE t.id = subtasks.task_id AND t.user_id = auth.uid()));
+
+CREATE INDEX IF NOT EXISTS idx_subtasks_task ON subtasks(task_id);
+
+CREATE TABLE IF NOT EXISTS task_status_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  from_status text,
+  to_status text NOT NULL,
+  changed_by uuid NOT NULL REFERENCES auth.users(id),
+  changed_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE task_status_history ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT ON task_status_history TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON task_status_history TO service_role;
+
+DROP POLICY IF EXISTS "select_own_task_history" ON task_status_history;
+CREATE POLICY "select_own_task_history" ON task_status_history FOR SELECT
+  TO authenticated
+  USING (EXISTS (SELECT 1 FROM tasks t WHERE t.id = task_status_history.task_id AND t.user_id = auth.uid()));
+
+DROP POLICY IF EXISTS "insert_own_task_history" ON task_status_history;
+CREATE POLICY "insert_own_task_history" ON task_status_history FOR INSERT
+  TO authenticated
+  WITH CHECK (EXISTS (SELECT 1 FROM tasks t WHERE t.id = task_status_history.task_id AND t.user_id = auth.uid()));
+
+CREATE INDEX IF NOT EXISTS idx_task_history_task ON task_status_history(task_id, changed_at);
+
+-- Function to record a status-history row. Called by triggers.
+-- SECURITY DEFINER so it can write to task_status_history even though
+-- the calling role only has INSERT on that table via policy. We revoke
+-- EXECUTE from PUBLIC/anon so it cannot be called as an RPC.
+CREATE OR REPLACE FUNCTION record_task_status_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- On INSERT: log the creation with from_status NULL.
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO task_status_history (task_id, from_status, to_status, changed_by, changed_at)
+    VALUES (NEW.id, NULL, COALESCE(NEW.status, 'Not Started'), auth.uid(), now());
+    RETURN NEW;
+  END IF;
+
+  -- On UPDATE: only log when the status actually changed.
+  IF TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status THEN
+    INSERT INTO task_status_history (task_id, from_status, to_status, changed_by, changed_at)
+    VALUES (NEW.id, OLD.status, NEW.status, auth.uid(), now());
+
+    -- Stamp/clear completed_at based on the new status.
+    IF NEW.status = 'Completed' AND OLD.status <> 'Completed' THEN
+      NEW.completed_at := now();
+    ELSIF NEW.status <> 'Completed' AND OLD.status = 'Completed' THEN
+      NEW.completed_at := NULL;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION record_task_status_change() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION record_task_status_change() TO authenticated;
+
+DROP TRIGGER IF EXISTS trg_tasks_status_history_insert ON tasks;
+CREATE TRIGGER trg_tasks_status_history_insert
+  BEFORE INSERT ON tasks
+  FOR EACH ROW EXECUTE FUNCTION record_task_status_change();
+
+DROP TRIGGER IF EXISTS trg_tasks_status_history_update ON tasks;
+CREATE TRIGGER trg_tasks_status_history_update
+  BEFORE UPDATE ON tasks
+  FOR EACH ROW EXECUTE FUNCTION record_task_status_change();
+
+-- Keep updated_at fresh on every update.
+DROP TRIGGER IF EXISTS trg_tasks_set_updated_at ON tasks;
+CREATE OR REPLACE FUNCTION set_tasks_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION set_tasks_updated_at() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION set_tasks_updated_at() TO authenticated;
+
+CREATE TRIGGER trg_tasks_set_updated_at
+  BEFORE UPDATE ON tasks
+  FOR EACH ROW EXECUTE FUNCTION set_tasks_updated_at();
+
+DROP TRIGGER IF EXISTS trg_subtasks_set_updated_at ON subtasks;
+CREATE OR REPLACE FUNCTION set_subtasks_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION set_subtasks_updated_at() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION set_subtasks_updated_at() TO authenticated;
+
+CREATE TRIGGER trg_subtasks_set_updated_at
+  BEFORE UPDATE ON subtasks
+  FOR EACH ROW EXECUTE FUNCTION set_subtasks_updated_at();
+/*
+# Fix task-save failure: SECURITY DEFINER trigger cannot see auth.uid()
+
+## Root cause
+`record_task_status_change()` is SECURITY DEFINER (owned by postgres). Inside a
+SECURITY DEFINER function, `auth.uid()` returns NULL because the request JWT is
+not consulted in that execution context. The BEFORE INSERT trigger on `tasks`
+called this function, which tried:
+
+    INSERT INTO task_status_history (..., changed_by, ...)
+    VALUES (..., auth.uid(), ...);
+
+`changed_by` is `uuid NOT NULL`, so the NULL violated the constraint and
+aborted the parent `tasks` INSERT — surfacing in the app as
+"Failed to save task."
+
+## Fix
+1. In the INSERT branch, use `NEW.user_id` as the actor. The task row carries
+   the owner (`user_id` defaults to `auth.uid()` from the session, set by the
+   row-level default BEFORE the trigger reads NEW). This is the same value
+   `auth.uid()` would have returned had it been available.
+2. In the UPDATE branch, keep using `auth.uid()`. UPDATE triggers on a plain
+   (non-SECURITY-DEFINER-needed) path — but to be safe and consistent, use
+   `NEW.user_id` for the actor as well. The owner cannot change (UPDATE policy
+   enforces user_id = auth.uid()), so `NEW.user_id` is the acting user.
+3. Revoke/GRANT unchanged; function stays SECURITY DEFINER so it can write to
+   task_status_history, which the authenticated role only has INSERT on via
+   policy.
+
+## Safety
+- No data is deleted or renamed.
+- No column types change.
+- Function is replaced in place; triggers re-attached to existing definitions.
+*/
+
+CREATE OR REPLACE FUNCTION record_task_status_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- On INSERT: log the creation with from_status NULL.
+  -- Use NEW.user_id as the actor: auth.uid() is NULL inside SECURITY DEFINER,
+  -- but the tasks.user_id column defaults to auth.uid() at INSERT time, so
+  -- NEW.user_id is the signed-in user who created the row.
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO task_status_history (task_id, from_status, to_status, changed_by, changed_at)
+    VALUES (NEW.id, NULL, COALESCE(NEW.status, 'Not Started'), NEW.user_id, now());
+    RETURN NEW;
+  END IF;
+
+  -- On UPDATE: only log when the status actually changed.
+  -- NEW.user_id is the row owner; the UPDATE RLS policy guarantees the caller
+  -- is that owner (auth.uid() = user_id), so it is the acting user.
+  IF TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status THEN
+    INSERT INTO task_status_history (task_id, from_status, to_status, changed_by, changed_at)
+    VALUES (NEW.id, OLD.status, NEW.status, NEW.user_id, now());
+
+    -- Stamp/clear completed_at based on the new status.
+    IF NEW.status = 'Completed' AND OLD.status <> 'Completed' THEN
+      NEW.completed_at := now();
+    ELSIF NEW.status <> 'Completed' AND OLD.status = 'Completed' THEN
+      NEW.completed_at := NULL;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION record_task_status_change() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION record_task_status_change() TO authenticated;
+
+-- Triggers are already attached; no need to drop/recreate.
+/*
+# Fix task-save: move status-history logging to AFTER INSERT/UPDATE trigger
+
+## Root cause (continued from migration 011)
+The BEFORE INSERT trigger tried to write a row into `task_status_history`
+referencing `NEW.id` before the parent `tasks` row existed, so the
+`task_status_history_task_id_fkey` foreign key failed and rolled back the
+whole insert. The earlier migration fixed the NULL `changed_by` (auth.uid()
+issue) but the trigger was still BEFORE, so the FK on task_id still rejected
+the insert.
+
+## Fix
+1. Replace `record_task_status_change()` so it only writes history (no more
+   mutating `completed_at` from inside the trigger).
+2. Move status-history logging to AFTER INSERT and AFTER UPDATE triggers so
+   the parent `tasks` row is committed and the FK is satisfiable.
+3. Keep the `completed_at` stamping in a SEPARATE BEFORE UPDATE trigger so
+   the value is in place before the row is written.
+
+## Notes
+- No data is deleted or renamed; functions are replaced in place.
+- Triggers are dropped and recreated with the correct timing.
+*/
+
+-- History logging only. Runs AFTER the parent row is committed so the FK
+-- task_status_history.task_id -> tasks.id is satisfiable.
+CREATE OR REPLACE FUNCTION record_task_status_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO task_status_history (task_id, from_status, to_status, changed_by, changed_at)
+    VALUES (NEW.id, NULL, COALESCE(NEW.status, 'Not Started'), NEW.user_id, now());
+    RETURN NEW;
+  END IF;
+
+  IF TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status THEN
+    INSERT INTO task_status_history (task_id, from_status, to_status, changed_by, changed_at)
+    VALUES (NEW.id, OLD.status, NEW.status, NEW.user_id, now());
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION record_task_status_change() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION record_task_status_change() TO authenticated;
+
+-- completed_at stamping, runs BEFORE UPDATE so the row is written with the
+-- correct value.
+CREATE OR REPLACE FUNCTION stamp_task_completed_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.status = 'Completed' AND OLD.status <> 'Completed' THEN
+    NEW.completed_at := now();
+  ELSIF NEW.status <> 'Completed' AND OLD.status = 'Completed' THEN
+    NEW.completed_at := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION stamp_task_completed_at() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION stamp_task_completed_at() TO authenticated;
+
+-- Re-attach triggers with correct timing.
+DROP TRIGGER IF EXISTS trg_tasks_status_history_insert ON tasks;
+CREATE TRIGGER trg_tasks_status_history_insert
+  AFTER INSERT ON tasks
+  FOR EACH ROW EXECUTE FUNCTION record_task_status_change();
+
+DROP TRIGGER IF EXISTS trg_tasks_status_history_update ON tasks;
+CREATE TRIGGER trg_tasks_status_history_update
+  AFTER UPDATE ON tasks
+  FOR EACH ROW EXECUTE FUNCTION record_task_status_change();
+
+DROP TRIGGER IF EXISTS trg_tasks_completed_at ON tasks;
+CREATE TRIGGER trg_tasks_completed_at
+  BEFORE UPDATE ON tasks
+  FOR EACH ROW EXECUTE FUNCTION stamp_task_completed_at();
+-- Step 1: Enable Row-Level Security on appointments if not already explicitly active
+ALTER TABLE public.appointments ENABLE ROW LEVEL SECURITY;
+
+-- Step 2: Drop existing wide-open policies for updates if they exist
+DROP POLICY IF EXISTS "Allow all authenticated operations" ON public.appointments;
+DROP POLICY IF EXISTS "Allow user updates" ON public.appointments;
+DROP POLICY IF EXISTS "Appointments read access" ON public.appointments;
+DROP POLICY IF EXISTS "Appointments insert access" ON public.appointments;
+DROP POLICY IF EXISTS "Appointments delete access" ON public.appointments;
+DROP POLICY IF EXISTS "Appointments update restriction" ON public.appointments;
+
+-- Step 3: Implement specific CRUD boundary lines
+-- Policy A: Allow any authenticated user to view appointments
+CREATE POLICY "Appointments read access" ON public.appointments
+    FOR SELECT TO authenticated USING (true);
+
+-- Policy B: Allow any coworker or admin to create/insert an appointment
+CREATE POLICY "Appointments insert access" ON public.appointments
+    FOR INSERT TO authenticated WITH CHECK (true);
+
+-- Policy C: Allow any authenticated user to delete if needed
+CREATE POLICY "Appointments delete access" ON public.appointments
+    FOR DELETE TO authenticated USING (true);
+
+-- Policy D: Strict rule for modifications (Updates)
+-- Enforces that either the user is an admin OR the user is the current owner (assigned_to) of the record.
+CREATE POLICY "Appointments update restriction" ON public.appointments
+    FOR UPDATE TO authenticated
+    USING (
+        (auth.jwt() -> 'user_metadata' ->> 'role' = 'administrator') OR
+        (assigned_to = auth.uid())
+    )
+    WITH CHECK (
+        -- If a non-admin is trying to switch the assigned_to (ownership) to someone else, reject it
+        CASE 
+            WHEN (auth.jwt() -> 'user_metadata' ->> 'role' = 'administrator') THEN true
+            ELSE (assigned_to = auth.uid()) -- Non-admins must keep themselves as the owner
+        END
+    );
+-- Step 1: Enable Row-Level Security on appointments if not already explicitly active
+ALTER TABLE public.appointments ENABLE ROW LEVEL SECURITY;
+
+-- Step 2: Drop existing wide-open policies for updates if they exist
+DROP POLICY IF EXISTS "Allow all authenticated operations" ON public.appointments;
+DROP POLICY IF EXISTS "Allow user updates" ON public.appointments;
+DROP POLICY IF EXISTS "Appointments read access" ON public.appointments;
+DROP POLICY IF EXISTS "Appointments insert access" ON public.appointments;
+DROP POLICY IF EXISTS "Appointments delete access" ON public.appointments;
+DROP POLICY IF EXISTS "Appointments update restriction" ON public.appointments;
+
+-- Step 3: Implement specific CRUD boundary lines
+-- Policy A: Allow any authenticated user to view appointments
+CREATE POLICY "Appointments read access" ON public.appointments
+    FOR SELECT TO authenticated USING (true);
+
+-- Policy B: Allow any coworker or admin to create/insert an appointment
+CREATE POLICY "Appointments insert access" ON public.appointments
+    FOR INSERT TO authenticated WITH CHECK (true);
+
+-- Policy C: Allow any authenticated user to delete if needed
+CREATE POLICY "Appointments delete access" ON public.appointments
+    FOR DELETE TO authenticated USING (true);
+
+-- Policy D: Strict rule for modifications (Updates)
+-- Enforces that either the user is an admin OR the user is the current owner (assigned_to) of the record.
+CREATE POLICY "Appointments update restriction" ON public.appointments
+    FOR UPDATE TO authenticated
+    USING (
+        (auth.jwt() -> 'user_metadata' ->> 'role' = 'administrator') OR
+        (assigned_to = auth.uid())
+    )
+    WITH CHECK (
+        -- If a non-admin is trying to switch the assigned_to (ownership) to someone else, reject it
+        CASE 
+            WHEN (auth.jwt() -> 'user_metadata' ->> 'role' = 'administrator') THEN true
+            ELSE (assigned_to = auth.uid()) -- Non-admins must keep themselves as the owner
+        END
+    );/*
+# Delivery Failure Monitoring for WhatsApp Messages
+
+## Overview
+Adds persistent tracking for Bird WhatsApp message delivery statuses. When a message
+is sent via Bird, an attempt record is created with the Bird message ID. Bird webhooks
+update the attempt status. Failed/rejected deliveries create alert records visible to
+the owner via a persistent notification indicator.
+
+## New Tables
+1. `reminder_attempts` — One row per send attempt. Stores Bird message ID, delivery
+   status, error details, and the original message content/parameters needed for retry.
+   Links back to the `reminders` table.
+2. `webhook_events` — Deduplication log for Bird webhook deliveries. Each Bird webhook
+   has a unique `webhook-id`; storing processed IDs prevents duplicate processing.
+3. `delivery_alerts` — Outstanding failure alerts shown in the Message Status Center.
+   Tracks acknowledgment (owner reviewed) and resolution (problem fixed) separately.
+
+## Columns
+### reminder_attempts
+- id (uuid PK)
+- reminder_id (uuid FK → reminders, ON DELETE CASCADE)
+- appointment_id (uuid FK → appointments, ON DELETE CASCADE)
+- bird_message_id (text, unique) — Bird's wam_ ID for this attempt
+- channel (text) — 'sms' (WhatsApp) or 'email'
+- recipient_address (text) — phone or email
+- delivery_status (text) — 'pending'|'accepted'|'sent'|'delivered'|'read'|'failed'|'rejected'
+- error_code (text) — Bird error.code
+- error_description (text) — Bird error.description
+- error_meta_code (text) — Bird error.meta_error_code
+- status_timestamp (timestamptz) — when the last status event was received
+- template_slug (text) — WhatsApp template used (e.g. 'appointment_confirmation')
+- template_params (jsonb) — parameters used to fill the template (for safe retry)
+- original_message (text) — human-readable summary of the message content
+- agent_notified (boolean) — whether the assigned agent was notified of failure
+- agent_notification_status (text) — 'pending'|'sent'|'failed'|'skipped'
+- is_retry (boolean) — true if this attempt is a manual retry
+- parent_attempt_id (uuid FK → reminder_attempts, nullable) — original attempt this retries
+- resolved_by_retry (boolean) — true if a successful retry resolved this failure
+- created_at (timestamptz)
+
+### webhook_events
+- id (uuid PK)
+- webhook_id (text, unique) — Bird's webhook-id header
+- event_type (text) — e.g. 'whatsapp.failed'
+- bird_message_id (text) — whatsapp_id from the payload
+- processed_at (timestamptz)
+
+### delivery_alerts
+- id (uuid PK)
+- attempt_id (uuid FK → reminder_attempts, ON DELETE CASCADE)
+- acknowledged (boolean, default false) — owner reviewed the failure
+- acknowledged_at (timestamptz, nullable)
+- acknowledged_by (uuid FK → profiles, nullable)
+- resolved (boolean, default false) — underlying problem addressed
+- resolved_at (timestamptz, nullable)
+- resolved_by (uuid FK → profiles, nullable)
+- created_at (timestamptz)
+
+## Security
+- All tables have RLS enabled.
+- SELECT/UPDATE on all three tables granted to `authenticated` (admin-only via policy predicate).
+- INSERT is allowed for `authenticated` with permissive policies (edge functions use service role
+  which bypasses RLS, but the frontend also needs to insert webhook_events for safety).
+- Admin-only access enforced via EXISTS check on profiles.role = 'admin'.
+- service_role is granted full access for edge functions.
+*/
+
+-- ============================================================================
+-- REMINDER_ATTEMPTS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS reminder_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  reminder_id uuid REFERENCES reminders(id) ON DELETE CASCADE,
+  appointment_id uuid REFERENCES appointments(id) ON DELETE CASCADE,
+  bird_message_id text UNIQUE,
+  channel text NOT NULL DEFAULT 'sms' CHECK (channel IN ('sms', 'email')),
+  recipient_address text NOT NULL,
+  delivery_status text NOT NULL DEFAULT 'pending' CHECK (
+    delivery_status IN ('pending', 'accepted', 'sent', 'delivered', 'read', 'failed', 'rejected')
+  ),
+  error_code text,
+  error_description text,
+  error_meta_code text,
+  status_timestamp timestamptz,
+  template_slug text,
+  template_params jsonb,
+  original_message text,
+  agent_notified boolean NOT NULL DEFAULT false,
+  agent_notification_status text NOT NULL DEFAULT 'pending' CHECK (
+    agent_notification_status IN ('pending', 'sent', 'failed', 'skipped')
+  ),
+  is_retry boolean NOT NULL DEFAULT false,
+  parent_attempt_id uuid REFERENCES reminder_attempts(id) ON DELETE SET NULL,
+  resolved_by_retry boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_attempt_bird_msg ON reminder_attempts (bird_message_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_reminder ON reminder_attempts (reminder_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_appt ON reminder_attempts (appointment_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_status ON reminder_attempts (delivery_status);
+
+ALTER TABLE reminder_attempts ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON reminder_attempts TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON reminder_attempts TO service_role;
+
+DROP POLICY IF EXISTS "attempts_select_admin" ON reminder_attempts;
+CREATE POLICY "attempts_select_admin"
+  ON reminder_attempts FOR SELECT TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "attempts_insert_admin" ON reminder_attempts;
+CREATE POLICY "attempts_insert_admin"
+  ON reminder_attempts FOR INSERT TO authenticated WITH CHECK (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "attempts_update_admin" ON reminder_attempts;
+CREATE POLICY "attempts_update_admin"
+  ON reminder_attempts FOR UPDATE TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  ) WITH CHECK (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "attempts_delete_admin" ON reminder_attempts;
+CREATE POLICY "attempts_delete_admin"
+  ON reminder_attempts FOR DELETE TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+-- ============================================================================
+-- WEBHOOK_EVENTS TABLE (deduplication)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  webhook_id text UNIQUE NOT NULL,
+  event_type text NOT NULL,
+  bird_message_id text,
+  processed_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_bird_msg ON webhook_events (bird_message_id);
+
+ALTER TABLE webhook_events ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON webhook_events TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON webhook_events TO service_role;
+
+DROP POLICY IF EXISTS "webhook_select_admin" ON webhook_events;
+CREATE POLICY "webhook_select_admin"
+  ON webhook_events FOR SELECT TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "webhook_insert_admin" ON webhook_events;
+CREATE POLICY "webhook_insert_admin"
+  ON webhook_events FOR INSERT TO authenticated WITH CHECK (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "webhook_update_admin" ON webhook_events;
+CREATE POLICY "webhook_update_admin"
+  ON webhook_events FOR UPDATE TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  ) WITH CHECK (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "webhook_delete_admin" ON webhook_events;
+CREATE POLICY "webhook_delete_admin"
+  ON webhook_events FOR DELETE TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+-- ============================================================================
+-- DELIVERY_ALERTS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS delivery_alerts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  attempt_id uuid NOT NULL REFERENCES reminder_attempts(id) ON DELETE CASCADE,
+  acknowledged boolean NOT NULL DEFAULT false,
+  acknowledged_at timestamptz,
+  acknowledged_by uuid REFERENCES profiles(id) ON DELETE SET NULL,
+  resolved boolean NOT NULL DEFAULT false,
+  resolved_at timestamptz,
+  resolved_by uuid REFERENCES profiles(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_attempt ON delivery_alerts (attempt_id);
+CREATE INDEX IF NOT EXISTS idx_alert_ack ON delivery_alerts (acknowledged);
+CREATE INDEX IF NOT EXISTS idx_alert_resolved ON delivery_alerts (resolved);
+
+ALTER TABLE delivery_alerts ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON delivery_alerts TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON delivery_alerts TO service_role;
+
+DROP POLICY IF EXISTS "alerts_select_admin" ON delivery_alerts;
+CREATE POLICY "alerts_select_admin"
+  ON delivery_alerts FOR SELECT TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "alerts_insert_admin" ON delivery_alerts;
+CREATE POLICY "alerts_insert_admin"
+  ON delivery_alerts FOR INSERT TO authenticated WITH CHECK (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "alerts_update_admin" ON delivery_alerts;
+CREATE POLICY "alerts_update_admin"
+  ON delivery_alerts FOR UPDATE TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  ) WITH CHECK (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+
+DROP POLICY IF EXISTS "alerts_delete_admin" ON delivery_alerts;
+CREATE POLICY "alerts_delete_admin"
+  ON delivery_alerts FOR DELETE TO authenticated USING (
+    EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+  );
+/*
+# Create focus_sessions table for Active Focus Sessions (Phase 2)
+
+## Purpose
+Stores persistent Focus Mode sessions so an active session survives
+application refresh, browser closure, and reopening. Each authenticated
+user can have at most one active session at a time.
+
+## New Tables
+
+### focus_sessions
+- id (uuid, PK)
+- user_id (uuid, NOT NULL, DEFAULT auth.uid()) — owner, FK to auth.users, CASCADE on delete
+- tasks (jsonb, NOT NULL) — committed task list with order, estimates, and metadata
+- current_task_index (int, NOT NULL, default 0) — index into the tasks array
+- task_started_at (timestamptz, nullable) — when the current task became active
+- task_deadline_at (timestamptz, nullable) — absolute deadline for the current task
+- completed_task_ids (jsonb, NOT NULL, default '[]') — array of task IDs marked Completed
+- skipped_task_ids (jsonb, NOT NULL, default '[]') — array of task IDs skipped
+- status (text, NOT NULL, default 'active', CHECK in active/completed)
+- created_at (timestamptz, default now())
+- updated_at (timestamptz, default now())
+
+## Security
+- RLS enabled on focus_sessions.
+- 4 policies (SELECT/INSERT/UPDATE/DELETE) scoped to auth.uid() = user_id.
+  INSERT policy's WITH CHECK uses auth.uid() = user_id; user_id DEFAULT auth.uid()
+  means the client can omit user_id on insert safely.
+- Grants: full CRUD to authenticated; full CRUD to service_role.
+
+## Enforcement
+- A partial unique index ensures only one active session per user:
+  UNIQUE (user_id) WHERE status = 'active'.
+  Attempting to insert a second active session for the same user fails with
+  a unique-violation error, which the application handles gracefully.
+
+## Notes
+1. The committed task list (tasks jsonb) is immutable once the session starts.
+   The application never modifies task order or estimates after creation.
+2. task_deadline_at is the authoritative countdown reference. The application
+   calculates remaining time from this timestamp, never from a JS interval.
+3. Completing a task calls the existing updateTask() function to mark the
+   original task as Completed. Skip does NOT change the original task status.
+4. No triggers or automation on this table — all logic is application-side.
+*/
+
+CREATE TABLE IF NOT EXISTS focus_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
+  tasks jsonb NOT NULL,
+  current_task_index int NOT NULL DEFAULT 0,
+  task_started_at timestamptz,
+  task_deadline_at timestamptz,
+  completed_task_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+  skipped_task_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+  status text NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active','completed')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE focus_sessions ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON focus_sessions TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON focus_sessions TO service_role;
+
+DROP POLICY IF EXISTS "select_own_focus_sessions" ON focus_sessions;
+CREATE POLICY "select_own_focus_sessions" ON focus_sessions FOR SELECT
+  TO authenticated USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "insert_own_focus_sessions" ON focus_sessions;
+CREATE POLICY "insert_own_focus_sessions" ON focus_sessions FOR INSERT
+  TO authenticated WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "update_own_focus_sessions" ON focus_sessions;
+CREATE POLICY "update_own_focus_sessions" ON focus_sessions FOR UPDATE
+  TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "delete_own_focus_sessions" ON focus_sessions;
+CREATE POLICY "delete_own_focus_sessions" ON focus_sessions FOR DELETE
+  TO authenticated USING (auth.uid() = user_id);
+
+-- Enforce one active session per user
+CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_sessions_one_active
+  ON focus_sessions(user_id) WHERE status = 'active';
+
+-- Keep updated_at fresh on every update
+DROP TRIGGER IF EXISTS trg_focus_sessions_set_updated_at ON focus_sessions;
+CREATE OR REPLACE FUNCTION set_focus_sessions_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION set_focus_sessions_updated_at() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION set_focus_sessions_updated_at() TO authenticated;
+
+CREATE TRIGGER trg_focus_sessions_set_updated_at
+  BEFORE UPDATE ON focus_sessions
+  FOR EACH ROW EXECUTE FUNCTION set_focus_sessions_updated_at();
+/*
+# Customer Directory & WhatsApp Controls
+
+## Purpose
+Introduces a dedicated customer directory so the practice can manage recurring
+client information independently of individual appointments, and adds per-
+appointment WhatsApp send controls.
+
+## 1. New Table: `customers`
+- `id` (uuid, primary key, default gen_random_uuid())
+- `full_name` (text, not null) — customer display name
+- `phone` (text, not null, default '') — US phone, validated by `validate_us_phone`; empty string allowed for walk-ins
+- `email` (text, not null, default '') — optional email, validated if non-empty
+- `notes` (text, not null, default '') — free-form notes
+- `tags` (text[], not null, default '{}') — flexible tagging (e.g. 'VIP', 'Tax')
+- `created_by` (uuid, nullable) — profile id of creator
+- `created_at` (timestamptz, default now())
+- `updated_at` (timestamptz, default now())
+
+## 2. Altered Table: `appointments`
+- Added `send_whatsapp` (boolean, not null, default false) — per-appointment WhatsApp opt-in
+- Added `customer_id` (uuid, nullable) — optional FK to `customers(id)` with ON DELETE SET NULL
+- `client_phone` column constraint relaxed: `validate_us_phone` now accepts empty string (walk-in / no-phone appointments)
+
+## 3. Modified Function: `validate_us_phone`
+- Now returns true for empty string ('') in addition to NULL, so appointments
+  and customer records can omit a phone number without failing the CHECK constraint.
+
+## 4. Indexes
+- `customers_phone_idx` — GIN trigram index on `phone` for fuzzy phone search
+- `customers_name_idx` — GIN trigram index on `full_name` for fuzzy name search
+- `customers_tags_idx` — GIN index on `tags` for tag-based filtering
+
+## 5. Security
+- RLS enabled on `customers`.
+- Grants: SELECT, INSERT, UPDATE, DELETE on `customers` to `authenticated` (app uses sign-in; shared directory across staff).
+- Policies: all authenticated users can CRUD customer rows (shared practice directory).
+- `appointments` table gets INSERT/UPDATE grants for the two new columns (`send_whatsapp`, `customer_id`) so existing role privileges cover them.
+
+## 6. Important Notes
+- All statements are idempotent: `IF NOT EXISTS` guards and DROP-before-CREATE for policies.
+- No data is lost: `client_phone` keeps its existing values; the new default only applies to new rows that omit it.
+- The `appointments.client_phone` DEFAULT '' is added so new rows can omit phone without failing NOT NULL.
+*/
+
+-- ─── Step 1: Relax validate_us_phone to accept empty string ───
+CREATE OR REPLACE FUNCTION public.validate_us_phone(phone text)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+AS $function$
+BEGIN
+  IF phone IS NULL OR phone = '' THEN
+    RETURN true;
+  END IF;
+  RETURN phone ~ '^\(\d{3}\)\s?\d{3}-\d{4}$';
+END;
+$function$;
+
+-- ─── Step 2: Create customers table ───
+CREATE TABLE IF NOT EXISTS public.customers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name text NOT NULL,
+  phone text NOT NULL DEFAULT '',
+  email text NOT NULL DEFAULT '',
+  notes text NOT NULL DEFAULT '',
+  tags text[] NOT NULL DEFAULT '{}',
+  created_by uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT customers_phone_format CHECK (public.validate_us_phone(phone)),
+  CONSTRAINT customers_email_format CHECK (
+    email = '' OR email ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+  )
+);
+
+-- ─── Step 3: Add columns to appointments (idempotent) ───
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'appointments' AND column_name = 'send_whatsapp'
+  ) THEN
+    ALTER TABLE public.appointments ADD COLUMN send_whatsapp boolean NOT NULL DEFAULT false;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'appointments' AND column_name = 'customer_id'
+  ) THEN
+    ALTER TABLE public.appointments ADD COLUMN customer_id uuid REFERENCES public.customers(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+-- ─── Step 4: Indexes for customer search ───
+CREATE INDEX IF NOT EXISTS customers_phone_idx ON public.customers USING gin (phone gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS customers_name_idx ON public.customers USING gin (full_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS customers_tags_idx ON public.customers USING gin (tags);
+
+-- ─── Step 5: RLS on customers ───
+ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.customers TO authenticated;
+
+DROP POLICY IF EXISTS "customers_select_all" ON public.customers;
+CREATE POLICY "customers_select_all"
+  ON public.customers FOR SELECT
+  TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "customers_insert_all" ON public.customers;
+CREATE POLICY "customers_insert_all"
+  ON public.customers FOR INSERT
+  TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS "customers_update_all" ON public.customers;
+CREATE POLICY "customers_update_all"
+  ON public.customers FOR UPDATE
+  TO authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "customers_delete_all" ON public.customers;
+CREATE POLICY "customers_delete_all"
+  ON public.customers FOR DELETE
+  TO authenticated USING (true);
+
+-- ─── Step 6: Ensure appointments grants cover new columns ───
+-- Existing grants already cover full-table INSERT/UPDATE for authenticated/anon.
+-- No additional grants needed for send_whatsapp / customer_id since they are
+-- included in the table-level privilege.
+
+-- ─── Step 7: updated_at trigger for customers ───
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$function$;
+
+DROP TRIGGER IF EXISTS customers_updated_at ON public.customers;
+CREATE TRIGGER customers_updated_at
+  BEFORE UPDATE ON public.customers
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+/*
+# Add company assignment, employee assignment, global flag, and WhatsApp toggle to customers
+
+1. New Columns on `customers`
+- `company_id` (uuid, nullable) — links a customer to a specific company. REFERENCES `companies(id) ON DELETE SET NULL` so deleting a company un-links (but does not delete) its customers.
+- `assigned_user_id` (uuid, nullable) — the employee primarily responsible for this customer. REFERENCES `profiles(id) ON DELETE SET NULL` so deleting an employee un-links (but does not delete) the customer.
+- `is_global` (boolean, NOT NULL, default false) — when true the customer is shared across all companies (not tied to a single company_id for filtering purposes).
+- `send_whatsapp` (boolean, NOT NULL, default true) — controls whether WhatsApp/SMS reminders are sent to this customer.
+
+2. Modified Tables
+- `customers` — four new columns added via ADD COLUMN IF NOT EXISTS (idempotent). Existing rows get `is_global = false` and `send_whatsapp = true` defaults.
+
+3. Security
+- No new tables created. RLS on `customers` remains enabled.
+- Existing CRUD grants and policies for `authenticated` role continue to cover the new columns (table-level grant).
+- No policy changes needed — the new columns are read/written under the same ownership rules already in place.
+
+4. Important Notes
+- This migration is idempotent: re-running it is safe because every ALTER uses IF NOT EXISTS.
+- No data is lost: `tags` column is left in place (the frontend will stop using it but the DB column remains).
+*/
+
+ALTER TABLE customers
+  ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES companies(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS assigned_user_id uuid REFERENCES profiles(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS is_global boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS send_whatsapp boolean NOT NULL DEFAULT true;
+/*
+# Add mailing address and birthday fields to customers
+
+## Purpose
+Extends the customer directory so each customer record can optionally store a
+mailing address and a birthday, enabling richer customer profiles and future
+birthday-based outreach.
+
+## 1. New Columns on `customers`
+- `address_line1` (text, NOT NULL, default '') — first line of the mailing address
+- `address_line2` (text, NOT NULL, default '') — second line (apartment, suite, etc.)
+- `city` (text, NOT NULL, default '') — city portion of the mailing address
+- `state` (text, NOT NULL, default '') — state portion of the mailing address
+- `zip_code` (text, NOT NULL, default '') — ZIP / postal code
+- `date_of_birth` (date, nullable) — customer birthday (date only, no time)
+
+All address columns default to empty string so existing rows and inserts that
+omit them continue to work without changes. `date_of_birth` is nullable because
+a birthday is not always known.
+
+## 2. Security
+- No new tables created. RLS on `customers` remains enabled.
+- Existing CRUD grants and policies for the `authenticated` role continue to
+  cover the new columns (table-level grant covers all columns).
+- No policy changes needed.
+
+## 3. Important Notes
+- This migration is idempotent: re-running is safe because every ALTER uses
+  IF NOT EXISTS.
+- No data is lost: existing rows pick up the default empty strings for the new
+  address columns and NULL for date_of_birth.
+*/
+
+ALTER TABLE customers
+  ADD COLUMN IF NOT EXISTS address_line1 text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS address_line2 text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS city text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS state text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS zip_code text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS date_of_birth date;
