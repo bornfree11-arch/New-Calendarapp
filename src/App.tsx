@@ -26,6 +26,7 @@ import { ResetPasswordScreen } from '@/screens/ResetPasswordScreen';
 import { TasksScreen } from '@/screens/TasksScreen';
 import { TaskDetailsModal } from '@/components/TaskDetailsModal';
 import { MessageStatusCenter } from '@/screens/MessageStatusCenter';
+import { CustomerDirectory } from '@/screens/CustomerDirectory';
 import { FocusModeWindow } from '@/screens/FocusModeWindow';
 import { AppHeader } from '@/components/AppHeader';
 import { TimerExpiredPopup } from '@/components/TimerExpiredPopup';
@@ -34,7 +35,7 @@ import { addDays, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import { Loader2 } from 'lucide-react';
 
 type View = 'monthly' | 'daily' | 'tasks';
-type Modal = 'search' | 'userManagement' | 'companyManagement' | 'auditLog' | 'exportCSV' | 'reminderStatus' | 'taskDetails' | 'messageStatus' | null;
+type Modal = 'search' | 'userManagement' | 'companyManagement' | 'customerDirectory' | 'auditLog' | 'exportCSV' | 'reminderStatus' | 'taskDetails' | 'messageStatus' | null;
 
 function AppContent() {
   const { profile, loading, passwordRecovery, clearPasswordRecovery, signOut } = useAuth();
@@ -244,6 +245,7 @@ function AppContent() {
         onOpenSearch={() => setModal('search')}
         onOpenUserManagement={() => setModal('userManagement')}
         onOpenCompanyManagement={() => setModal('companyManagement')}
+        onOpenCustomerDirectory={() => setModal('customerDirectory')}
         onOpenAuditLog={() => setModal('auditLog')}
         onOpenReminderStatus={() => setModal('reminderStatus')}
         onOpenExport={() => setModal('exportCSV')}
@@ -336,6 +338,10 @@ function AppContent() {
 
       {modal === 'companyManagement' && profile.role === 'admin' && (
         <CompanyManagement onClose={() => setModal(null)} onDataChange={() => setDataVersion(v => v + 1)} />
+      )}
+
+      {modal === 'customerDirectory' && (
+        <CustomerDirectory onClose={() => setModal(null)} onDataChange={() => setDataVersion(v => v + 1)} />
       )}
 
       {modal === 'auditLog' && profile.role === 'admin' && (

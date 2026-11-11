@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { saveAppointment, getAppointmentsByDate, searchAppointments, buildCompanySnapshot } from '@/lib/store';
+import { saveAppointment, getAppointmentsByDate, searchAppointments, searchCustomers, buildCompanySnapshot } from '@/lib/store';
 import {
   Appointment,
   Profile,
   Company,
+  Customer,
   AppointmentTypeMapping,
   AppointmentType,
   AppointmentStatus,
@@ -21,7 +22,7 @@ import {
   isValidPhoneNumber,
   isValidEmail,
 } from '@/lib/dateUtils';
-import { X, Save, AlertTriangle, Search, Loader2 } from 'lucide-react';
+import { X, Save, AlertTriangle, Search, Loader2, MessageCircle, Users } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface AppointmentFormProps {
@@ -78,6 +79,12 @@ export function AppointmentForm({
   const [showClientSearch, setShowClientSearch] = useState(false);
   const [clientSearchResults, setClientSearchResults] = useState<{ name: string; phone: string; email: string }[]>([]);
   const [clientSearchLoading, setClientSearchLoading] = useState(false);
+  const [sendWhatsapp, setSendWhatsapp] = useState(appointment?.send_whatsapp ?? false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(appointment?.customer_id || null);
+  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
+  const [customerSearchResults, setCustomerSearchResults] = useState<Customer[]>([]);
+  const [customerSearchLoading, setCustomerSearchLoading] = useState(false);
+  const [showCustomerSearch, setShowCustomerSearch] = useState(false);
 
   const timeSlotOptions = useMemo(() => {
     const slots: string[] = [];
@@ -138,6 +145,25 @@ export function AppointmentForm({
     }
   }, [clientSearchQuery]);
 
+  useEffect(() => {
+    if (customerSearchQuery.length >= 1) {
+      setCustomerSearchLoading(true);
+      const timer = setTimeout(async () => {
+        try {
+          const results = await searchCustomers(customerSearchQuery);
+          setCustomerSearchResults(results);
+        } catch {
+          setCustomerSearchResults([]);
+        } finally {
+          setCustomerSearchLoading(false);
+        }
+      }, 300);
+      return () => clearTimeout(timer);
+    } else {
+      setCustomerSearchResults([]);
+    }
+  }, [customerSearchQuery]);
+
   function handleClientSearch(query: string) {
     setClientSearchQuery(query);
     setShowClientSearch(true);
@@ -149,6 +175,22 @@ export function AppointmentForm({
     setClientEmail(client.email);
     setClientSearchQuery('');
     setShowClientSearch(false);
+  }
+
+  function selectCustomerFromDirectory(customer: Customer) {
+    setSelectedCustomerId(customer.id);
+    setClientName(customer.full_name);
+    setClientPhone(customer.phone || '');
+    setClientEmail(customer.email || '');
+    setCustomerSearchQuery('');
+    setShowCustomerSearch(false);
+  }
+
+  function clearCustomerLink() {
+    setSelectedCustomerId(null);
+    setClientName('');
+    setClientPhone('');
+    setClientEmail('');
   }
 
   const sameDayAppts: Appointment[] = [];
@@ -200,7 +242,7 @@ export function AppointmentForm({
         return;
       }
       if (!clientName.trim()) { setError('Client name is required.'); return; }
-      if (!isValidPhoneNumber(clientPhone)) { setError('Please enter a valid US phone number: (555) 123-4567'); return; }
+      if (clientPhone && !isValidPhoneNumber(clientPhone)) { setError('Please enter a valid US phone number: (555) 123-4567'); return; }
       if (clientEmail && !isValidEmail(clientEmail)) { setError('Please enter a valid email address.'); return; }
       if (!assignedTo) { setError('Please assign a coworker.'); return; }
 
@@ -248,6 +290,8 @@ export function AppointmentForm({
         company_id: companyId,
         company_snapshot: buildCompanySnapshot(assignedComp || null) || appointment?.company_snapshot || null,
         status: status,
+        send_whatsapp: sendWhatsapp,
+        customer_id: selectedCustomerId,
         created_by: appointment?.created_by || currentUser?.id || null,
       }, currentUser?.id || null);
 
@@ -408,15 +452,75 @@ export function AppointmentForm({
           <div className="border border-slate-200 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-semibold text-slate-700">Client Information</label>
-              <button
-                type="button"
-                onClick={() => setShowClientSearch(!showClientSearch)}
-                className="flex items-center gap-1 text-xs text-teal-600 hover:text-teal-700 font-medium"
-              >
-                <Search className="w-3.5 h-3.5" />
-                Search existing
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => { setShowCustomerSearch(!showCustomerSearch); setShowClientSearch(false); }}
+                  className={`flex items-center gap-1 text-xs font-medium ${showCustomerSearch ? 'text-teal-700' : 'text-teal-600'} hover:text-teal-700`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  From Directory
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowClientSearch(!showClientSearch); setShowCustomerSearch(false); }}
+                  className="flex items-center gap-1 text-xs text-teal-600 hover:text-teal-700 font-medium"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  Search existing
+                </button>
+              </div>
             </div>
+
+            {showCustomerSearch && (
+              <div className="relative mb-2">
+                <input
+                  type="text"
+                  value={customerSearchQuery}
+                  onChange={(e) => setCustomerSearchQuery(e.target.value)}
+                  placeholder="Search customer directory by name, phone, or email..."
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
+                />
+                {customerSearchLoading && (
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
+                  </div>
+                )}
+                {customerSearchResults.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto">
+                    {customerSearchResults.map(c => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => selectCustomerFromDirectory(c)}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-b-0 text-sm"
+                      >
+                        <div className="font-medium text-slate-700">{c.full_name}</div>
+                        <div className="text-xs text-slate-400">
+                          {c.phone && `${c.phone}`}
+                          {c.phone && c.email && ' · '}
+                          {c.email && c.email}
+                          {c.tags.length > 0 && ` · ${c.tags.join(', ')}`}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedCustomerId && (
+              <div className="flex items-center justify-between bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
+                <span className="text-xs text-teal-700 font-medium">Linked to customer directory</span>
+                <button
+                  type="button"
+                  onClick={clearCustomerLink}
+                  className="text-xs text-teal-600 hover:text-teal-800 font-medium"
+                >
+                  Unlink
+                </button>
+              </div>
+            )}
 
             {showClientSearch && (
               <div className="relative mb-2">
@@ -424,7 +528,7 @@ export function AppointmentForm({
                   type="text"
                   value={clientSearchQuery}
                   onChange={(e) => handleClientSearch(e.target.value)}
-                  placeholder="Search by name or phone..."
+                  placeholder="Search past appointments by name or phone..."
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
                 />
                 {clientSearchLoading && (
@@ -463,12 +567,11 @@ export function AppointmentForm({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Phone *</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Phone</label>
                 <input
                   type="tel"
                   value={clientPhone}
                   onChange={(e) => setClientPhone(formatPhoneNumber(e.target.value))}
-                  required
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
                   placeholder="(555) 123-4567"
                 />
@@ -484,6 +587,21 @@ export function AppointmentForm({
                 placeholder="client@example.com"
               />
             </div>
+            <label className="flex items-center gap-2.5 cursor-pointer select-none mt-1">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={sendWhatsapp}
+                onClick={() => setSendWhatsapp(!sendWhatsapp)}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${sendWhatsapp ? 'bg-green-500' : 'bg-slate-300'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition ${sendWhatsapp ? 'translate-x-5' : 'translate-x-1'}`} />
+              </button>
+              <span className="text-sm text-slate-700 flex items-center gap-1.5">
+                <MessageCircle className="w-4 h-4 text-green-600" />
+                Send WhatsApp confirmation
+              </span>
+            </label>
           </div>
 
           <div>

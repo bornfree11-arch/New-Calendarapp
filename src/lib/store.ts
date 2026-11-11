@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus, ReminderAttempt, DeliveryAlert, DeliveryFailureWithDetails, FocusSession, FocusSessionTask } from '@/types';
+import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus, ReminderAttempt, DeliveryAlert, DeliveryFailureWithDetails, FocusSession, FocusSessionTask, Customer } from '@/types';
 
 export interface AuditEntry {
   id: string;
@@ -664,4 +664,72 @@ export async function updateFocusSession(
 export async function deleteFocusSession(id: string): Promise<void> {
   const { error } = await supabase.from('focus_sessions').delete().eq('id', id);
   if (error) throw error;
+}
+
+// --- Customers API ---
+
+export async function getCustomers(): Promise<Customer[]> {
+  const { data, error } = await supabase
+    .from('customers')
+    .select('*')
+    .order('full_name', { ascending: true });
+  if (error) throw error;
+  return (data || []) as Customer[];
+}
+
+export async function searchCustomers(query: string): Promise<Customer[]> {
+  if (!query.trim()) return getCustomers();
+  const { data, error } = await supabase
+    .from('customers')
+    .select('*')
+    .or(`full_name.ilike.%${query}%,phone.ilike.%${query}%,email.ilike.%${query}%`)
+    .order('full_name', { ascending: true })
+    .limit(50);
+  if (error) throw error;
+  return (data || []) as Customer[];
+}
+
+export async function saveCustomer(customer: Partial<Customer> & { id?: string }, actorId: string | null): Promise<Customer> {
+  if (customer.id) {
+    const { data: existing } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('id', customer.id)
+      .maybeSingle<Customer>();
+
+    const { data, error } = await supabase
+      .from('customers')
+      .update({ ...customer, updated_at: new Date().toISOString() })
+      .eq('id', customer.id)
+      .select('*')
+      .single<Customer>();
+    if (error) throw error;
+    if (existing) {
+      await logAudit('UPDATE', 'customers', `Updated customer "${data.full_name}"`, existing as unknown as Record<string, unknown>, data as unknown as Record<string, unknown>, actorId);
+    }
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from('customers')
+    .insert({ ...customer, created_by: actorId, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .select('*')
+    .single<Customer>();
+  if (error) throw error;
+  await logAudit('INSERT', 'customers', `Created customer "${data.full_name}"`, null, data as unknown as Record<string, unknown>, actorId);
+  return data;
+}
+
+export async function deleteCustomer(id: string, actorId: string | null): Promise<void> {
+  const { data: deleted } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle<Customer>();
+
+  const { error } = await supabase.from('customers').delete().eq('id', id);
+  if (error) throw error;
+  if (deleted) {
+    await logAudit('DELETE', 'customers', `Deleted customer "${deleted.full_name}"`, deleted as unknown as Record<string, unknown>, null, actorId);
+  }
 }

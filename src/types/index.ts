@@ -65,8 +65,22 @@ export interface Appointment {
   company_id: string | null;
   company_snapshot: CompanySnapshot | null;
   status: AppointmentStatus;
+  send_whatsapp: boolean;
+  customer_id: string | null;
   created_by: string | null;
   last_modified_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Customer {
+  id: string;
+  full_name: string;
+  phone: string;
+  email: string;
+  notes: string;
+  tags: string[];
+  created_by: string | null;
   created_at: string;
   updated_at: string;
 }

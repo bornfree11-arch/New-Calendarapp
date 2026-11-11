@@ -14,6 +14,7 @@ import {
   Calculator,
   MessageSquare,
   Timer,
+  Contact,
 } from 'lucide-react';
 import { FocusSession, FocusSessionTask } from '@/types';
 
@@ -21,6 +22,7 @@ interface AppHeaderProps {
   onOpenSearch: () => void;
   onOpenUserManagement: () => void;
   onOpenCompanyManagement: () => void;
+  onOpenCustomerDirectory: () => void;
   onOpenAuditLog: () => void;
   onOpenReminderStatus: () => void;
   onOpenExport: () => void;
@@ -37,6 +39,7 @@ export function AppHeader({
   onOpenSearch,
   onOpenUserManagement,
   onOpenCompanyManagement,
+  onOpenCustomerDirectory,
   onOpenAuditLog,
   onOpenReminderStatus,
   onOpenExport,
@@ -113,6 +116,14 @@ export function AppHeader({
                 )}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={onOpenCustomerDirectory}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
+          >
+            <Contact className="w-4 h-4" />
+            <span className="hidden sm:inline">Customers</span>
           </button>
 
           <button
