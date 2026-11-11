@@ -81,6 +81,18 @@ export function isValidPhoneNumber(phone: string): boolean {
   return /^\(\d{3}\)\s?\d{3}-\d{4}$/.test(phone);
 }
 
+export function isDummyPhoneNumber(phone: string): boolean {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 10) return true;
+  const last10 = digits.slice(-10);
+  if (/^(\d)\1{9}$/.test(last10)) return true;
+  if (last10 === '1234567890') return true;
+  if (last10 === '0123456789') return true;
+  if (/^55501\d{2}$/.test(last10)) return true;
+  if (/^000\d{7}$/.test(last10)) return true;
+  return false;
+}
+
 export function isValidEmail(email: string): boolean {
   if (!email) return true;
   return /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(email);

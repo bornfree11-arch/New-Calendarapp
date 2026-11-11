@@ -21,6 +21,7 @@ import {
   formatPhoneNumber,
   isValidPhoneNumber,
   isValidEmail,
+  isDummyPhoneNumber,
 } from '@/lib/dateUtils';
 import { X, Save, AlertTriangle, Search, Loader2, MessageCircle, Users } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -151,7 +152,8 @@ export function AppointmentForm({
       const timer = setTimeout(async () => {
         try {
           const results = await searchCustomers(customerSearchQuery);
-          setCustomerSearchResults(results);
+          const filtered = results.filter(c => c.is_global || !companyId || c.company_id === companyId);
+          setCustomerSearchResults(filtered);
         } catch {
           setCustomerSearchResults([]);
         } finally {
@@ -162,7 +164,7 @@ export function AppointmentForm({
     } else {
       setCustomerSearchResults([]);
     }
-  }, [customerSearchQuery]);
+  }, [customerSearchQuery, companyId]);
 
   function handleClientSearch(query: string) {
     setClientSearchQuery(query);
@@ -182,6 +184,7 @@ export function AppointmentForm({
     setClientName(customer.full_name);
     setClientPhone(customer.phone || '');
     setClientEmail(customer.email || '');
+    setSendWhatsapp(customer.send_whatsapp && !isDummyPhoneNumber(customer.phone || '') && !!customer.phone);
     setCustomerSearchQuery('');
     setShowCustomerSearch(false);
   }
@@ -191,7 +194,16 @@ export function AppointmentForm({
     setClientName('');
     setClientPhone('');
     setClientEmail('');
+    setSendWhatsapp(false);
   }
+
+  const whatsappDisabled = !clientPhone || isDummyPhoneNumber(clientPhone);
+
+  useEffect(() => {
+    if (whatsappDisabled && sendWhatsapp) {
+      setSendWhatsapp(false);
+    }
+  }, [whatsappDisabled, sendWhatsapp]);
 
   const sameDayAppts: Appointment[] = [];
 
@@ -587,19 +599,21 @@ export function AppointmentForm({
                 placeholder="client@example.com"
               />
             </div>
-            <label className="flex items-center gap-2.5 cursor-pointer select-none mt-1">
+            <label className={`flex items-center gap-2.5 select-none mt-1 ${whatsappDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
               <button
                 type="button"
                 role="switch"
                 aria-checked={sendWhatsapp}
+                disabled={whatsappDisabled}
                 onClick={() => setSendWhatsapp(!sendWhatsapp)}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${sendWhatsapp ? 'bg-green-500' : 'bg-slate-300'}`}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${sendWhatsapp ? 'bg-green-500' : 'bg-slate-300'} ${whatsappDisabled ? 'cursor-not-allowed' : ''}`}
               >
                 <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition ${sendWhatsapp ? 'translate-x-5' : 'translate-x-1'}`} />
               </button>
               <span className="text-sm text-slate-700 flex items-center gap-1.5">
                 <MessageCircle className="w-4 h-4 text-green-600" />
                 Send WhatsApp confirmation
+                {whatsappDisabled && <span className="text-xs text-slate-400">(requires valid phone)</span>}
               </span>
             </label>
           </div>

@@ -1,17 +1,17 @@
 {
   "projectId": "72447426",
   "functions": {
+    "bird-webhook": {
+      "hasChanged": false,
+      "hash": "217b2ba963528a54ea3ea4324b964ff4b51d24e1f472c2af46a362084c3edb06"
+    },
     "send-reminder": {
       "hasChanged": false,
-      "hash": "6e0a68f06fdf6ddfd1e70b9065b7e6107ae69d6df2a41bddb02df6c6ab76da8a"
+      "hash": "7530284436b06e9379990e8d89f2348b516a243ecee86d847db5f988d4ffd374"
     },
     "upload-logo": {
       "hasChanged": false,
       "hash": "d995bc88d477620e645d8ce5d8ae3f8d834018111c8aefe0555f37c6452590a4"
-    },
-    "bird-webhook": {
-      "hasChanged": false,
-      "hash": "217b2ba963528a54ea3ea4324b964ff4b51d24e1f472c2af46a362084c3edb06"
     }
   }
 }

@@ -37,6 +37,7 @@ interface AppointmentRow {
   client_email: string;
   notes: string;
   assigned_to: string;
+  send_whatsapp: boolean | null;
   company_snapshot: {
     name: string;
     address_line1: string;
@@ -98,6 +99,18 @@ function isBillingOrRestrictionError(error: string): boolean {
     lower.includes("403") ||
     lower.includes("402")
   );
+}
+
+function isDummyPhoneNumber(phone: string): boolean {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 10) return true;
+  const last10 = digits.slice(-10);
+  if (/^(\d)\1{9}$/.test(last10)) return true;
+  if (last10 === "1234567890") return true;
+  if (last10 === "0123456789") return true;
+  if (/^55501\d{2}$/.test(last10)) return true;
+  if (/^000\d{7}$/.test(last10)) return true;
+  return false;
 }
 
 // Build the dynamic template variables for the client WhatsApp message
@@ -562,6 +575,13 @@ Deno.serve(async (req: Request) => {
 
       // SMS channel via Bird API
       if (body.channel === "sms") {
+        // Guard: skip if the customer has WhatsApp disabled or the recipient phone is a dummy/placeholder number.
+        if (appt.send_whatsapp === false || isDummyPhoneNumber(body.recipient_address)) {
+          return new Response(
+            JSON.stringify({ status: "skipped", channel: "sms", softFail: true }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
         if (!birdApiKey) {
           return new Response(
             JSON.stringify({ status: "failed", channel: "sms", error: "BIRD_API_KEY is not configured in edge function secrets." }),

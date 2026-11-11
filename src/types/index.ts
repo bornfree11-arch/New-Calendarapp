@@ -80,6 +80,10 @@ export interface Customer {
   email: string;
   notes: string;
   tags: string[];
+  company_id: string | null;
+  assigned_user_id: string | null;
+  is_global: boolean;
+  send_whatsapp: boolean;
   created_by: string | null;
   created_at: string;
   updated_at: string;
