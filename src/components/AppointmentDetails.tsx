@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { Appointment, Profile, Company, AppointmentStatus } from '@/types';
-import { formatTime12, formatDateLong, getInitials } from '@/lib/dateUtils';
+import { formatTime12, formatDateLong, getInitials, isDummyPhoneNumber } from '@/lib/dateUtils';
 import { supabase } from '@/lib/supabase';
 import { X, Edit2, Trash2, MapPin, Phone, Mail, Clock, Building, Send, MessageSquare, CheckCircle2, AlertCircle } from 'lucide-react';
 
@@ -121,7 +121,7 @@ export function AppointmentDetails({
         setSmsStatus('sent');
       } else if (data?.status === 'skipped') {
         setSmsStatus('error');
-        setSmsError(data?.error || 'SMS could not be sent (account restriction or insufficient funds).');
+        setSmsError(data?.error || data?.softFail ? 'SMS skipped — WhatsApp is disabled for this customer or the phone number is not a valid mobile number.' : 'SMS could not be sent (account restriction or insufficient funds).');
       } else {
         setSmsStatus('error');
         setSmsError(data?.error || 'The SMS service could not send the text.');
@@ -285,9 +285,9 @@ export function AppointmentDetails({
           </button>
           <button
             onClick={handleSendSMS}
-            disabled={smsStatus === 'sending'}
+            disabled={smsStatus === 'sending' || appointment.send_whatsapp === false || !appointment.client_phone || isDummyPhoneNumber(appointment.client_phone)}
             className="flex items-center justify-center gap-2 bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium py-2.5 px-4 rounded-lg transition text-sm disabled:opacity-50"
-            title={appointment.client_phone ? `Send text to ${appointment.client_phone}` : 'No client phone on file'}
+            title={appointment.send_whatsapp === false ? 'WhatsApp is disabled for this customer' : !appointment.client_phone ? 'No client phone on file' : isDummyPhoneNumber(appointment.client_phone) ? 'Phone number is not a valid mobile number' : `Send text to ${appointment.client_phone}`}
           >
             <MessageSquare className="w-4 h-4" />
             {smsStatus === 'sending' ? 'Sending...' : 'Text'}

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { getCustomers, saveCustomer, deleteCustomer, searchCustomers, getCompanies, getProfiles } from '@/lib/store';
 import { useAuth } from '@/context/AuthContext';
 import { Customer, Company, Profile } from '@/types';
-import { formatPhoneNumber, isValidPhoneNumber, isValidEmail } from '@/lib/dateUtils';
+import { formatPhoneNumber, isValidPhoneNumber, isValidEmail, isDummyPhoneNumber } from '@/lib/dateUtils';
 import { X, Plus, Pencil, Trash2, Users, Search, Loader2, Phone, Mail, MessageCircle, Building2, UserCircle, Globe } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -291,6 +291,14 @@ function CustomerForm({ customer, companies, profiles, onClose, onSaved }: {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const whatsappDisabled = !phone || isDummyPhoneNumber(phone);
+
+  useEffect(() => {
+    if (whatsappDisabled && sendWhatsapp) {
+      setSendWhatsapp(false);
+    }
+  }, [whatsappDisabled, sendWhatsapp]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
@@ -401,16 +409,18 @@ function CustomerForm({ customer, companies, profiles, onClose, onSaved }: {
               Global Customer (Shared across all companies)
             </span>
           </label>
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+          <label className={`flex items-center gap-2.5 select-none ${whatsappDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
             <input
               type="checkbox"
               checked={sendWhatsapp}
+              disabled={whatsappDisabled}
               onChange={(e) => setSendWhatsapp(e.target.checked)}
               className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
             />
             <span className="text-sm text-slate-700 flex items-center gap-1.5">
               <MessageCircle className="w-4 h-4 text-green-600" />
               Send WhatsApp Reminders
+              {whatsappDisabled && <span className="text-xs text-slate-400">(requires valid phone)</span>}
             </span>
           </label>
           <div>

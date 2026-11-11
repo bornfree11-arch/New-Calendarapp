@@ -343,7 +343,7 @@ export function AppointmentForm({
         }
 
         // Automatically send SMS confirmation to client via Bird API
-        if (clientPhone) {
+        if (sendWhatsapp && clientPhone && !isDummyPhoneNumber(clientPhone)) {
           try {
             await supabase.functions.invoke('send-reminder', {
               method: 'POST',
