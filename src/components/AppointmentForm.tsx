@@ -469,7 +469,14 @@ export function AppointmentForm({
           </button>
         </div>
 
-        <form onSubmit={handleSave} className="px-6 py-4 space-y-4">
+        <form onSubmit={handleSave}
+           onKeyDown={(e) => {
+           if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') {
+      e.preventDefault();
+    }
+  }}
+  className="px-6 py-4 space-y-4"
+>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Date *</label>
