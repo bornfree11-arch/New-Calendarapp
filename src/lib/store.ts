@@ -385,12 +385,6 @@ export async function deleteTask(id: string): Promise<void> {
   if (error) throw error;
 }
 
-
-export async function deleteTask(id: string): Promise<void> {
-  const { error } = await supabase.from('tasks').delete().eq('id', id);
-  if (error) throw error;
-}
-
 // --- Subtasks API ---
 
 export async function addSubtask(taskId: string, title: string): Promise<Subtask> {
