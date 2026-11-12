@@ -156,7 +156,7 @@ export function AppointmentForm({
       const timer = setTimeout(async () => {
         try {
           const results = await searchCustomers(customerSearchQuery);
-          const filtered = results.filter(c => c.is_global || !companyId || c.company_id === companyId);
+          const filtered = results.filter(c => c.is_global || !c.company_id || c.company_id === companyId);
           setCustomerSearchResults(filtered);
         } catch {
           setCustomerSearchResults([]);
