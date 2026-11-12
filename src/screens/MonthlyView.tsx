@@ -104,8 +104,8 @@ export function MonthlyView({
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-4">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-col items-center justify-center mb-4 gap-2">
+          <div className="flex items-center gap-3">
             <button
               onClick={() => handleMonthNav(-1)}
               className="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition"
@@ -113,12 +113,9 @@ export function MonthlyView({
             >
               <ChevronLeft className="w-5 h-5 text-slate-600" />
             </button>
-            <button
-              onClick={handleToday}
-              className="px-4 py-1.5 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition"
-            >
-              Today
-            </button>
+            <h2 className="text-lg font-semibold text-slate-800 min-w-[160px] text-center">
+              {MONTH_NAMES[centerDate.getMonth()]} {centerDate.getFullYear()}
+            </h2>
             <button
               onClick={() => handleMonthNav(1)}
               className="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition"
@@ -127,10 +124,12 @@ export function MonthlyView({
               <ChevronRight className="w-5 h-5 text-slate-600" />
             </button>
           </div>
-          <h2 className="text-lg font-semibold text-slate-800">
-            {MONTH_NAMES[centerDate.getMonth()]} {centerDate.getFullYear()}
-          </h2>
-          <div className="w-24" />
+          <button
+            onClick={handleToday}
+            className="px-4 py-1.5 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition"
+          >
+            Today
+          </button>
         </div>
 
         {error && (

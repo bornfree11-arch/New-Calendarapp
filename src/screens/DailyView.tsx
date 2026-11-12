@@ -4,7 +4,6 @@ import { Appointment, Profile, AppointmentStatus, isLightColor, Task, TaskStatus
 import {
   formatDateISO,
   formatTime12,
-  formatDateLong,
   formatDateMedium,
   addDays,
   parseDateISO,
@@ -187,14 +186,8 @@ export function DailyView({
       <div className="sticky top-14 z-10 bg-slate-50/95 backdrop-blur-sm border-b border-slate-200">
         <div className="max-w-[1200px] mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
-            <button
-              onClick={onPrevDay}
-              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
-            >
-              <ChevronLeft className="w-4 h-4" />
-              <span className="hidden sm:inline">Previous Day</span>
-            </button>
-            <div className="flex items-center gap-3">
+            {/* Far Left: Monthly navigation link */}
+            <div className="flex-1 flex justify-start">
               <button
                 onClick={onBackToMonthly}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-teal-600 hover:bg-teal-50 rounded-lg transition"
@@ -202,20 +195,41 @@ export function DailyView({
                 <ArrowLeft className="w-4 h-4" />
                 <span className="hidden sm:inline">Monthly</span>
               </button>
-              <div className="text-center">
-                <div className="text-lg font-semibold text-slate-800">{formatDateLong(date)}</div>
-                <div className="text-sm text-slate-500">
+            </div>
+
+            {/* Center: Previous Day, Date block & subtitle, Next Day */}
+            <div className="flex items-center justify-center gap-2 sm:gap-3 lg:gap-4 shrink-0">
+              <button
+                onClick={onPrevDay}
+                className="flex items-center gap-1.5 px-3 sm:px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Previous Day</span>
+              </button>
+              <div className="text-center min-w-0">
+                <div className="text-sm sm:text-base md:text-lg font-semibold text-slate-800">
+                  {date.toLocaleDateString('en-US', {
+                    weekday: 'long',
+                    month: 'long',
+                    day: 'numeric',
+                    year: 'numeric',
+                  })}
+                </div>
+                <div className="text-xs sm:text-sm text-slate-500">
                   {appointments.filter(a => a.status !== 'Cancelled').length} appointment{appointments.filter(a => a.status !== 'Cancelled').length !== 1 ? 's' : ''} today
                 </div>
               </div>
+              <button
+                onClick={onNextDay}
+                className="flex items-center gap-1.5 px-3 sm:px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
+              >
+                <span className="hidden sm:inline">Next Day</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
             </div>
-            <button
-              onClick={onNextDay}
-              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
-            >
-              <span className="hidden sm:inline">Next Day</span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
+
+            {/* Far Right: Balancing spacer for true centering */}
+            <div className="flex-1 flex justify-end pointer-events-none" aria-hidden="true" />
           </div>
         </div>
       </div>
