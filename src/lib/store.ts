@@ -192,10 +192,11 @@ export async function deleteAppointment(id: string, actorId: string | null): Pro
 }
 
 // --- Companies API ---
+// --- Companies API ---
 
 export async function getCompanies(): Promise<Company[]> {
   const { data, error } = await supabase
-    .from('companies')
+    .from('calendar_companies')
     .select('*')
     .order('name', { ascending: true });
   if (error) throw error;
@@ -205,25 +206,26 @@ export async function getCompanies(): Promise<Company[]> {
 export async function saveCompany(company: Partial<Company> & { id?: string }, actorId: string | null): Promise<Company> {
   if (company.id) {
     const { data, error } = await supabase
-      .from('companies')
+      .from('calendar_companies')
       .update({ ...company, updated_at: new Date().toISOString() })
       .eq('id', company.id)
       .select('*')
       .single<Company>();
     if (error) throw error;
-    await logAudit('UPDATE', 'companies', `Updated company "${data.name}"`, null, data as unknown as Record<string, unknown>, actorId);
+    await logAudit('UPDATE', 'calendar_companies', `Updated company "${data.name}"`, null, data as unknown as Record<string, unknown>, actorId);
     return data;
   }
 
   const { data, error } = await supabase
-    .from('companies')
+    .from('calendar_companies')
     .insert({ ...company, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .select('*')
     .single<Company>();
   if (error) throw error;
-  await logAudit('INSERT', 'companies', `Created company "${data.name}"`, null, data as unknown as Record<string, unknown>, actorId);
+  await logAudit('INSERT', 'calendar_companies', `Created company "${data.name}"`, null, data as unknown as Record<string, unknown>, actorId);
   return data;
 }
+
 
 // --- Type Mappings API ---
 
@@ -301,7 +303,7 @@ export function buildCompanySnapshot(company: Company | null): CompanySnapshot |
 
 export async function getTasks(): Promise<Task[]> {
   const { data, error } = await supabase
-    .from('tasks')
+    .from('calendar_tasks')
     .select('*')
     .order('due_date', { ascending: true, nullsFirst: false });
   if (error) throw error;
@@ -310,7 +312,7 @@ export async function getTasks(): Promise<Task[]> {
 
 export async function getTasksByDateRange(startDate: string, endDate: string): Promise<Task[]> {
   const { data, error } = await supabase
-    .from('tasks')
+    .from('calendar_tasks')
     .select('*')
     .gte('due_date', startDate)
     .lte('due_date', endDate)
@@ -321,7 +323,7 @@ export async function getTasksByDateRange(startDate: string, endDate: string): P
 
 export async function getTasksByDate(date: string): Promise<Task[]> {
   const { data, error } = await supabase
-    .from('tasks')
+    .from('calendar_tasks')
     .select('*')
     .eq('due_date', date)
     .order('status', { ascending: true });
@@ -331,7 +333,7 @@ export async function getTasksByDate(date: string): Promise<Task[]> {
 
 export async function getTaskDetails(taskId: string): Promise<{ task: Task | null; subtasks: Subtask[]; history: TaskStatusHistoryEntry[] }> {
   const [taskRes, subtasksRes, historyRes] = await Promise.all([
-    supabase.from('tasks').select('*').eq('id', taskId).maybeSingle<Task>(),
+    supabase.from('calendar_tasks').select('*').eq('id', taskId).maybeSingle<Task>(),
     supabase.from('subtasks').select('*').eq('task_id', taskId).order('created_at', { ascending: true }),
     supabase.from('task_status_history').select('*').eq('task_id', taskId).order('changed_at', { ascending: true }),
   ]);
@@ -353,7 +355,7 @@ export async function createTask(input: {
   status?: TaskStatus;
 }): Promise<Task> {
   const { data, error } = await supabase
-    .from('tasks')
+    .from('calendar_tasks')
     .insert({
       title: input.title,
       action_category: input.action_category,
@@ -369,7 +371,7 @@ export async function createTask(input: {
 
 export async function updateTask(id: string, updates: Partial<Pick<Task, 'title' | 'action_category' | 'notes' | 'due_date' | 'status'>>): Promise<Task> {
   const { data, error } = await supabase
-    .from('tasks')
+    .from('calendar_tasks')
     .update(updates)
     .eq('id', id)
     .select('*')
@@ -377,6 +379,12 @@ export async function updateTask(id: string, updates: Partial<Pick<Task, 'title'
   if (error) throw error;
   return data;
 }
+
+export async function deleteTask(id: string): Promise<void> {
+  const { error } = await supabase.from('calendar_tasks').delete().eq('id', id);
+  if (error) throw error;
+}
+
 
 export async function deleteTask(id: string): Promise<void> {
   const { error } = await supabase.from('tasks').delete().eq('id', id);
