@@ -257,7 +257,7 @@ const COMPANY_LOGOS: Record<string, string> = {
   "MB Multiservice, LLC": `${yxjikabaxqzmutcxwqyy}/storage/v1/object/public/email-assets/mb-multiservice-logo.png`,
 };
 
-const DEFAULT_LOGO_URL = `${supabaseUrl}/storage/v1/object/public/email-assets/default-logo.png`;
+const DEFAULT_LOGO_URL = `${yxjikabaxqzmutcxwqyy}/storage/v1/object/public/email-assets/default-logo.png`;
 
 
 function getCompanyLogo(companyName: string | undefined): string {
