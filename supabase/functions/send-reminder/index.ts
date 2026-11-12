@@ -253,11 +253,12 @@ async function sendEmail(
 // Dynamic company logo map — keyed by company name from the appointment snapshot.
 // Update or add entries here to customize each company's branded logo URL.
 const COMPANY_LOGOS: Record<string, string> = {
-  "STRESS FREE TAXES": "https://firmdngjvcyhfnhaaafq.supabase.co/storage/v1/object/public/email-assets/stress-free-taxes-logo.png",
-  "MB Multiservice, LLC": "https://firmdngjvcyhfnhaaafq.supabase.co/storage/v1/object/public/email-assets/mb-multiservice-logo.png",
+  "STRESS FREE TAXES": `${yxjikabaxqzmutcxwqyy}/storage/v1/object/public/email-assets/stress-free-taxes-logo.png`,
+  "MB Multiservice, LLC": `${yxjikabaxqzmutcxwqyy}/storage/v1/object/public/email-assets/mb-multiservice-logo.png`,
 };
 
-const DEFAULT_LOGO_URL = "https://firmdngjvcyhfnhaaafq.supabase.co/storage/v1/object/public/email-assets/default-logo.png";
+const DEFAULT_LOGO_URL = `${supabaseUrl}/storage/v1/object/public/email-assets/default-logo.png`;
+
 
 function getCompanyLogo(companyName: string | undefined): string {
   if (!companyName) return DEFAULT_LOGO_URL;
