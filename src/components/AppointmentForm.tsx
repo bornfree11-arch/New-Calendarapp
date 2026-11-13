@@ -81,6 +81,7 @@ export function AppointmentForm({
   const [clientSearchResults, setClientSearchResults] = useState<{ name: string; phone: string; email: string }[]>([]);
   const [clientSearchLoading, setClientSearchLoading] = useState(false);
   const [sendWhatsapp, setSendWhatsapp] = useState(appointment?.send_whatsapp ?? false);
+  const [whatsappManuallyUnchecked, setWhatsappManuallyUnchecked] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(appointment?.customer_id || null);
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [customerSearchResults, setCustomerSearchResults] = useState<Customer[]>([]);
@@ -211,6 +212,15 @@ export function AppointmentForm({
       setSendWhatsapp(false);
     }
   }, [whatsappDisabled, sendWhatsapp]);
+
+  useEffect(() => {
+    if (appointment) return;
+    const digits = clientPhone.replace(/\D/g, '');
+    const isValidRealPhone = digits.length === 10 && !isDummyPhoneNumber(clientPhone);
+    if (isValidRealPhone && !whatsappManuallyUnchecked) {
+      setSendWhatsapp(true);
+    }
+  }, [appointment, clientPhone, whatsappManuallyUnchecked]);
 
   const sameDayAppts: Appointment[] = [];
 
@@ -733,7 +743,13 @@ export function AppointmentForm({
                 role="switch"
                 aria-checked={sendWhatsapp}
                 disabled={whatsappDisabled}
-                onClick={() => setSendWhatsapp(!sendWhatsapp)}
+                onClick={() => {
+                  const next = !sendWhatsapp;
+                  setSendWhatsapp(next);
+                  if (!appointment) {
+                    setWhatsappManuallyUnchecked(!next);
+                  }
+                }}
                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${sendWhatsapp ? 'bg-green-500' : 'bg-slate-300'} ${whatsappDisabled ? 'cursor-not-allowed' : ''}`}
               >
                 <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition ${sendWhatsapp ? 'translate-x-5' : 'translate-x-1'}`} />

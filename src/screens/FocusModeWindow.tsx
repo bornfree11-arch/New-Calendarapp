@@ -5,11 +5,13 @@ import { Task, TaskActionCategory, Subtask, FocusSessionTask, FocusSession } fro
 import { formatDateLong, parseDateISO, formatDateISO } from '@/lib/dateUtils';
 import { CATEGORY_COLORS } from '@/components/TaskDetailsModal';
 import type { useFocusSession } from '@/lib/useFocusSession';
+import { useNotificationPermission, unlockAudio } from '@/lib/alerts';
 import {
   Loader2,
   GripVertical,
   Clock,
   Play,
+  Pause,
   Calendar as CalendarIcon,
   X,
   AlertCircle,
@@ -22,6 +24,10 @@ import {
   SkipForward,
   PlusCircle,
   PartyPopper,
+  Bell,
+  BellOff,
+  VolumeX,
+  XCircle,
 } from 'lucide-react';
 
 type FocusState = 'active' | 'ignored';
@@ -87,7 +93,7 @@ function toDraftRow(task: Task): DraftTask {
     status: task.status,
     hours: 0,
     minutes: 0,
-    state: 'active',
+    state: 'ignored',
   };
 }
 
@@ -134,6 +140,7 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
   const [error, setError] = useState('');
   const [startMessage, setStartMessage] = useState('');
   const [starting, setStarting] = useState(false);
+  const { permission: notifPermission, requestPermission } = useNotificationPermission();
   const dragIndexRef = useRef<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
@@ -220,7 +227,14 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
             .filter(d => isEligible(taskMap.get(d.taskId)!))
             .map(d => {
               const t = taskMap.get(d.taskId)!;
-              return { ...d, title: t.title, actionCategory: t.action_category, status: t.status, dueDate: t.due_date! };
+              return {
+                ...d,
+                title: t.title,
+                actionCategory: t.action_category,
+                status: t.status,
+                dueDate: t.due_date!,
+                state: d.state || (d.hours > 0 || d.minutes > 0 ? 'active' : 'ignored'),
+              };
             });
           const existingIds = new Set(refreshed.map(d => d.taskId));
           const newEligible = allTasks
@@ -274,13 +288,23 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
   function updateHours(index: number, raw: string) {
     if (isLocked) return;
     const val = Math.max(0, Math.min(23, parseInt(raw) || 0));
-    setFocusTasks(prev => prev.map((ft, i) => i === index ? { ...ft, hours: val } : ft));
+    setFocusTasks(prev => prev.map((ft, i) => {
+      if (i !== index) return ft;
+      const nextHours = val;
+      const hasTime = (nextHours * 60 + ft.minutes) > 0;
+      return { ...ft, hours: nextHours, state: hasTime ? 'active' : ft.state };
+    }));
   }
 
   function updateMinutes(index: number, raw: string) {
     if (isLocked) return;
     const val = Math.max(0, Math.min(59, parseInt(raw) || 0));
-    setFocusTasks(prev => prev.map((ft, i) => i === index ? { ...ft, minutes: val } : ft));
+    setFocusTasks(prev => prev.map((ft, i) => {
+      if (i !== index) return ft;
+      const nextMinutes = val;
+      const hasTime = (ft.hours * 60 + nextMinutes) > 0;
+      return { ...ft, minutes: nextMinutes, state: hasTime ? 'active' : ft.state };
+    }));
   }
 
   function toggleIgnore(index: number) {
@@ -414,6 +438,30 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
             </div>
           )}
 
+          {(notifPermission === 'default' || notifPermission === 'denied') && (
+            <div className="mb-3 flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-xl border bg-white border-slate-200 text-slate-600">
+              {notifPermission === 'default' ? (
+                <>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Bell className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    <span className="truncate">Enable desktop alerts for halfway &amp; completion warnings.</span>
+                  </div>
+                  <button
+                    onClick={() => { void requestPermission(); }}
+                    className="px-2.5 py-1 font-medium text-white bg-teal-600 hover:bg-teal-700 rounded-lg transition shrink-0"
+                  >
+                    Enable
+                  </button>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 min-w-0 text-slate-500">
+                  <BellOff className="w-3.5 h-3.5 shrink-0" />
+                  <span>Desktop alerts blocked in browser settings (sound &amp; tab alerts still work).</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="bg-gradient-to-r from-teal-600 to-teal-700 rounded-2xl px-6 py-5 shadow-sm">
             <div className="flex items-center gap-2 text-teal-100 text-xs font-medium uppercase tracking-wide mb-1">
               <Clock className="w-3.5 h-3.5" />
@@ -458,6 +506,28 @@ function PreparationView({ profile, hook, onClose }: { profile: ReturnType<typeo
             </div>
           ) : (
             <>
+              {!isLocked && (
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <span className="text-xs font-medium text-slate-500">
+                    Tasks ({focusTasks.length}) — Ignored by default
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setFocusTasks(prev => prev.map(ft => ({ ...ft, state: 'active' })))}
+                      className="text-xs font-medium text-teal-600 hover:text-teal-700 transition"
+                    >
+                      Activate All
+                    </button>
+                    <span className="text-slate-300">·</span>
+                    <button
+                      onClick={() => setFocusTasks(prev => prev.map(ft => ({ ...ft, state: 'ignored' })))}
+                      className="text-xs font-medium text-slate-500 hover:text-slate-700 transition"
+                    >
+                      Ignore All
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="space-y-2 mb-4">
                 {focusTasks.map((ft, index) => (
                   <TaskDragRow
@@ -548,6 +618,9 @@ function ActiveSessionView({ session, hook, onClose }: { session: FocusSession; 
   const currentTask = session.tasks[session.current_task_index];
   const remainingMs = hook.remainingMs;
   const isAtZero = hook.isAtZero;
+  const isPaused = hook.isPaused;
+  const completionAlertTask = hook.completionAlertTask;
+  const { permission: notifPermission, requestPermission } = useNotificationPermission();
 
   const [subtasks, setSubtasks] = useState<Subtask[]>([]);
   const [taskNotes, setTaskNotes] = useState('');
@@ -556,6 +629,7 @@ function ActiveSessionView({ session, hook, onClose }: { session: FocusSession; 
   const [error, setError] = useState('');
   const [showPostpone, setShowPostpone] = useState(false);
   const [customPostpone, setCustomPostpone] = useState('');
+  const [confirmCancel, setConfirmCancel] = useState(false);
 
   useEffect(() => {
     if (!currentTask) return;
@@ -624,6 +698,30 @@ function ActiveSessionView({ session, hook, onClose }: { session: FocusSession; 
     }
   }
 
+  async function handleResume() {
+    setActionLoading(true);
+    setError('');
+    try {
+      await hook.resumeSession();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resume timer.');
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleConfirmCancel() {
+    setActionLoading(true);
+    setError('');
+    try {
+      await hook.cancelSession();
+      setConfirmCancel(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to cancel focus session.');
+      setActionLoading(false);
+    }
+  }
+
   if (!currentTask) {
     return null;
   }
@@ -649,6 +747,12 @@ function ActiveSessionView({ session, hook, onClose }: { session: FocusSession; 
               <span className="text-xs text-slate-400 shrink-0">
                 Task {taskNumber} of {totalTasks}
               </span>
+              {isPaused && (
+                <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-full shrink-0">
+                  <Pause className="w-3 h-3" />
+                  Paused
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1 shrink-0">
               <button
@@ -671,23 +775,137 @@ function ActiveSessionView({ session, hook, onClose }: { session: FocusSession; 
         </div>
 
         {/* Countdown banner */}
-        <div className="sticky top-14 z-[5] bg-slate-50 px-5 pt-4 pb-4">
+        <div className="sticky top-14 z-[5] bg-slate-50 px-5 pt-4 pb-4 space-y-3">
+          {(notifPermission === 'default' || notifPermission === 'denied') && (
+            <div className="flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-xl border bg-white border-slate-200 text-slate-600">
+              {notifPermission === 'default' ? (
+                <>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Bell className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    <span className="truncate">Desktop alerts are off. Enable OS notifications for halfway &amp; completion chimes.</span>
+                  </div>
+                  <button
+                    onClick={() => { void requestPermission(); }}
+                    className="px-2.5 py-1 font-medium text-white bg-teal-600 hover:bg-teal-700 rounded-lg transition shrink-0"
+                  >
+                    Enable
+                  </button>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 min-w-0 text-slate-500">
+                  <BellOff className="w-3.5 h-3.5 shrink-0" />
+                  <span>Desktop alerts blocked in browser settings (sound &amp; tab alerts still active).</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {hook.halfwayAlertTask && (
+            <div className="bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-3 flex items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Clock className="w-5 h-5 text-amber-600 shrink-0 animate-pulse" />
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-amber-900 truncate">
+                    ⏳ Halfway through &ldquo;{hook.halfwayAlertTask.title}&rdquo;!
+                  </p>
+                  <p className="text-xs text-amber-700">
+                    You are 50% through the estimated time for this task.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => hook.acknowledgeHalfwayAlert()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {isAtZero && completionAlertTask && (
+            <div className="bg-red-50 border-2 border-red-300 rounded-xl px-4 py-3 flex items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Clock className="w-5 h-5 text-red-600 shrink-0 animate-pulse" />
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-red-900 truncate">
+                    Focus Timer Complete — {completionAlertTask.title}
+                  </p>
+                  <p className="text-xs text-red-700">
+                    Time is up. Acknowledge to silence the repeating alarm, or complete/postpone below.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => hook.acknowledgeCompletionAlert()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-red-600 text-white hover:bg-red-700 rounded-lg transition shrink-0"
+              >
+                <VolumeX className="w-3.5 h-3.5" />
+                Acknowledge
+              </button>
+            </div>
+          )}
+
           <div className={`rounded-2xl px-6 py-5 shadow-sm transition-colors ${
             isAtZero
               ? 'bg-gradient-to-r from-red-600 to-red-700'
-              : 'bg-gradient-to-r from-teal-600 to-teal-700'
+              : isPaused
+                ? 'bg-gradient-to-r from-amber-600 to-amber-700'
+                : 'bg-gradient-to-r from-teal-600 to-teal-700'
           }`}>
             <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-2 text-teal-100 text-xs font-medium uppercase tracking-wide" style={isAtZero ? { color: 'rgba(254,226,226,0.9)' } : undefined}>
-                <Clock className="w-3.5 h-3.5" />
-                {isAtZero ? 'Time Expired' : 'Time Remaining'}
+              <div
+                className="flex items-center gap-2 text-teal-100 text-xs font-medium uppercase tracking-wide"
+                style={isAtZero ? { color: 'rgba(254,226,226,0.9)' } : isPaused ? { color: 'rgba(254,243,199,0.95)' } : undefined}
+              >
+                {isPaused ? <Pause className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
+                {isAtZero ? 'Time Expired' : isPaused ? 'Timer Paused' : 'Time Remaining'}
               </div>
-              <div className="text-xs text-teal-100" style={isAtZero ? { color: 'rgba(254,226,226,0.9)' } : undefined}>
+              <div
+                className="text-xs text-teal-100"
+                style={isAtZero ? { color: 'rgba(254,226,226,0.9)' } : isPaused ? { color: 'rgba(254,243,199,0.95)' } : undefined}
+              >
                 {completedCount} done · {skippedCount} skipped
               </div>
             </div>
-            <div className="text-3xl font-bold text-white font-mono">
-              {formatCountdown(remainingMs)}
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                <div className="text-3xl font-bold text-white font-mono">
+                  {formatCountdown(remainingMs)}
+                </div>
+                {isPaused && (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide bg-white/20 text-white px-2.5 py-1 rounded-full">
+                    <Pause className="w-3 h-3" />
+                    Paused
+                  </span>
+                )}
+              </div>
+
+              {!isAtZero && (
+                <div className="flex items-center gap-2">
+                  {isPaused ? (
+                    <button
+                      onClick={handleResume}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-white text-amber-800 hover:bg-amber-50 rounded-lg transition shadow-sm disabled:opacity-50"
+                    >
+                      {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                      Resume
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        unlockAudio();
+                        hook.pauseSession();
+                      }}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-white/15 text-white hover:bg-white/25 border border-white/25 rounded-lg transition disabled:opacity-50"
+                    >
+                      <Pause className="w-3.5 h-3.5" />
+                      Pause
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             {/* Progress bar */}
             <div className="mt-3 h-1.5 bg-white/20 rounded-full overflow-hidden">
@@ -822,6 +1040,39 @@ function ActiveSessionView({ session, hook, onClose }: { session: FocusSession; 
                     className="px-3 py-1.5 text-sm font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition disabled:opacity-50"
                   >
                     Apply
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!confirmCancel ? (
+              <button
+                onClick={() => setConfirmCancel(true)}
+                disabled={actionLoading}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 border border-slate-200 rounded-xl transition disabled:opacity-50"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                Cancel Focus Timer
+              </button>
+            ) : (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <p className="text-xs font-medium text-red-800">
+                  Stop and reset the Focus timer without marking the current task completed?
+                </p>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => setConfirmCancel(false)}
+                    disabled={actionLoading}
+                    className="px-3 py-1.5 text-xs font-medium bg-white text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 transition"
+                  >
+                    Keep Going
+                  </button>
+                  <button
+                    onClick={handleConfirmCancel}
+                    disabled={actionLoading}
+                    className="px-3 py-1.5 text-xs font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50"
+                  >
+                    {actionLoading ? 'Cancelling...' : 'Yes, Cancel Timer'}
                   </button>
                 </div>
               </div>

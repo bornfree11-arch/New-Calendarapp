@@ -257,10 +257,11 @@ export function DailyView({
                 return (
                   <div
                     key={slot.time}
-                    className="flex border-b border-slate-100 last:border-b-0"
+                    onClick={() => onSlotClick(date, slot.time)}
+                    className="flex border-b border-slate-100 last:border-b-0 cursor-pointer hover:bg-teal-50/70 transition group"
                     style={{ minHeight: '48px' }}
                   >
-                    <div className="w-20 shrink-0 px-2 py-1 text-xs text-slate-400 text-right border-r border-slate-100 flex items-start">
+                    <div className="w-20 shrink-0 px-2 py-1 text-xs text-slate-400 group-hover:text-teal-600 transition text-right border-r border-slate-100 flex items-start">
                       {slot.label}
                     </div>
 
@@ -281,14 +282,11 @@ export function DailyView({
                           />
                         ))
                       ) : !slotOccupied ? (
-                        <button
-                          onClick={() => onSlotClick(date, slot.time)}
-                          className="flex-1 hover:bg-teal-50 transition group cursor-pointer"
-                        >
-                          <div className="opacity-0 group-hover:opacity-100 transition flex items-center justify-center h-full text-xs text-teal-600 font-medium">
+                        <div className="flex-1 flex items-center justify-center h-full">
+                          <span className="opacity-0 group-hover:opacity-100 transition text-xs text-teal-600 font-medium">
                             + Book {slot.label}
-                          </div>
-                        </button>
+                          </span>
+                        </div>
                       ) : null}
                     </div>
                   </div>
@@ -430,7 +428,11 @@ function AppointmentBlock({ appt, profile, height, lane, laneCount, onClick }: A
 
   return (
     <button
-      onClick={onClick}
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
       className={`absolute rounded-lg shadow-sm px-3 py-2 text-left overflow-hidden transition hover:shadow-md hover:brightness-95 ${STATUS_BORDER[appt.status]}`}
       style={{
         height: `${height - 2}px`,

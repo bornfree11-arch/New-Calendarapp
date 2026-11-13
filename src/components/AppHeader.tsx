@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
+import { useNotificationPermission } from '@/lib/alerts';
 import {
   CalendarDays,
   LogOut,
@@ -9,12 +10,14 @@ import {
   FileText,
   ScrollText,
   Bell,
+  BellOff,
   ChevronDown,
   ListTodo,
   Calculator,
   MessageSquare,
   Timer,
   Contact,
+  Pause,
 } from 'lucide-react';
 import { FocusSession, FocusSessionTask } from '@/types';
 
@@ -32,6 +35,7 @@ interface AppHeaderProps {
   focusSession?: FocusSession | null;
   focusCurrentTask?: FocusSessionTask | null;
   focusRemainingMs?: number;
+  focusIsPaused?: boolean;
   onOpenFocus?: () => void;
 }
 
@@ -49,10 +53,13 @@ export function AppHeader({
   focusSession,
   focusCurrentTask,
   focusRemainingMs,
+  focusIsPaused,
   onOpenFocus,
 }: AppHeaderProps) {
   const { profile, signOut } = useAuth();
   const [showAdminMenu, setShowAdminMenu] = useState(false);
+  const [showBlockedHelp, setShowBlockedHelp] = useState(false);
+  const { permission: notifPermission, requestPermission } = useNotificationPermission();
   const isAdmin = profile?.role === 'admin';
 
   return (
@@ -68,17 +75,66 @@ export function AppHeader({
           {focusSession && focusCurrentTask && focusSession.status === 'active' && onOpenFocus && (
             <button
               onClick={onOpenFocus}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-lg transition shrink-0"
+              className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium border rounded-lg transition shrink-0 ${
+                focusIsPaused
+                  ? 'bg-amber-50 border-amber-200 hover:bg-amber-100'
+                  : 'bg-teal-50 border-teal-200 hover:bg-teal-100'
+              }`}
               title="Open Focus session"
             >
-              <Timer className="w-4 h-4 text-teal-600 shrink-0" />
-              <span className="truncate max-w-[160px] text-teal-800">{focusCurrentTask.title}</span>
+              <Timer className={`w-4 h-4 shrink-0 ${focusIsPaused ? 'text-amber-600' : 'text-teal-600'}`} />
+              <span className={`truncate max-w-[140px] ${focusIsPaused ? 'text-amber-900' : 'text-teal-800'}`}>
+                {focusCurrentTask.title}
+              </span>
+              {focusIsPaused && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-800">
+                  <Pause className="w-2.5 h-2.5" />
+                  Paused
+                </span>
+              )}
               <span className={`font-mono text-xs font-semibold px-1.5 py-0.5 rounded ${
-                (focusRemainingMs ?? 0) <= 0 ? 'text-red-700 bg-red-100' : 'text-teal-700 bg-teal-100'
+                focusIsPaused
+                  ? 'text-amber-800 bg-amber-100'
+                  : (focusRemainingMs ?? 0) <= 0
+                    ? 'text-red-700 bg-red-100'
+                    : 'text-teal-700 bg-teal-100'
               }`}>
                 {formatCountdown(focusRemainingMs ?? 0)}
               </span>
             </button>
+          )}
+
+          {(notifPermission === 'default' || notifPermission === 'denied') && (
+            <div className="relative shrink-0">
+              {notifPermission === 'default' ? (
+                <button
+                  onClick={() => { void requestPermission(); }}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-lg transition"
+                  title="Enable desktop notifications for Focus timers and upcoming appointments"
+                >
+                  <Bell className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Enable Alerts</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowBlockedHelp(v => !v)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-500 bg-slate-100 border border-slate-200 hover:bg-slate-200 rounded-lg transition"
+                  title="Desktop notifications are blocked in browser settings"
+                >
+                  <BellOff className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Alerts Blocked</span>
+                </button>
+              )}
+              {showBlockedHelp && notifPermission === 'denied' && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setShowBlockedHelp(false)} />
+                  <div className="absolute left-0 mt-1.5 w-64 bg-white border border-slate-200 rounded-xl shadow-lg p-3 z-40 text-xs text-slate-600">
+                    <p className="font-semibold text-slate-800 mb-1">Desktop Alerts Blocked</p>
+                    <p>Enable Notifications in your browser&apos;s site permissions (lock icon in the address bar) to receive OS desktop alerts. In-app banners and sound chimes remain active.</p>
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
 

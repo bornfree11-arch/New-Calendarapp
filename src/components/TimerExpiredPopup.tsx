@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { FocusSessionTask } from '@/types';
+import { useNotificationPermission, unlockAudio } from '@/lib/alerts';
 import {
   X,
   Clock,
@@ -20,31 +21,25 @@ interface TimerExpiredPopupProps {
 export function TimerExpiredPopup({ task, onPostpone, onSkip, onDismiss, onOpenFocus }: TimerExpiredPopupProps) {
   const [showPostponeOptions, setShowPostponeOptions] = useState(false);
   const [customMinutes, setCustomMinutes] = useState('');
-  const [notifPermission, setNotifPermission] = useState<NotificationPermission | undefined>(
-    typeof Notification !== 'undefined' ? Notification.permission : undefined
-  );
+  const { permission: notifPermission, requestPermission } = useNotificationPermission();
 
   async function handleEnableNotifications() {
-    if (typeof Notification === 'undefined') return;
-    try {
-      const result = await Notification.requestPermission();
-      setNotifPermission(result);
-    } catch {
-      // Some browsers throw if called without a user gesture
-    }
+    await requestPermission();
   }
 
   function handlePostpone(minutes: number) {
+    unlockAudio();
     onPostpone(minutes);
     onDismiss();
   }
 
   function handleSkip() {
+    unlockAudio();
     onSkip();
     onDismiss();
   }
 
-  const canNotify = typeof Notification !== 'undefined';
+  const canNotify = notifPermission !== 'unsupported';
   const notifGranted = notifPermission === 'granted';
 
   return (

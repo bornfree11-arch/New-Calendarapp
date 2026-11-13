@@ -31,8 +31,10 @@ import { FocusModeWindow } from '@/screens/FocusModeWindow';
 import { AppHeader } from '@/components/AppHeader';
 import { TimerExpiredPopup } from '@/components/TimerExpiredPopup';
 import { useFocusSession } from '@/lib/useFocusSession';
-import { addDays, parseDateISO, formatDateISO } from '@/lib/dateUtils';
-import { Loader2 } from 'lucide-react';
+import { useAppointmentAlerts } from '@/lib/useAppointmentAlerts';
+import { getNotificationPermission, requestNotificationPermission } from '@/lib/alerts';
+import { addDays, parseDateISO, formatDateISO, formatTime12 } from '@/lib/dateUtils';
+import { Loader2, Clock, VolumeX, BellRing, X } from 'lucide-react';
 
 type View = 'monthly' | 'daily' | 'tasks';
 type Modal = 'search' | 'userManagement' | 'companyManagement' | 'customerDirectory' | 'auditLog' | 'exportCSV' | 'reminderStatus' | 'taskDetails' | 'messageStatus' | null;
@@ -64,6 +66,11 @@ function AppContent() {
   const [messageFailureCount, setMessageFailureCount] = useState(0);
   const [focusOpen, setFocusOpen] = useState(false);
   const focusSession = useFocusSession({ profile, authLoading: loading });
+  const { upcomingAlerts, dismissUpcomingAlert } = useAppointmentAlerts({
+    profile,
+    authLoading: loading,
+    dataVersion,
+  });
 
   const loadReferenceData = useCallback(async () => {
     try {
@@ -140,6 +147,14 @@ function AppContent() {
   useEffect(() => {
     if (passwordRecovery) setShowResetPassword(true);
   }, [passwordRecovery]);
+
+  // Request OS browser notification permission upfront when authenticated app loads
+  useEffect(() => {
+    if (loading || !profile) return;
+    if (getNotificationPermission() === 'default') {
+      void requestNotificationPermission();
+    }
+  }, [loading, profile]);
 
   if (loading) {
     return (
@@ -255,8 +270,124 @@ function AppContent() {
         focusSession={focusSession.session}
         focusCurrentTask={focusSession.currentTask}
         focusRemainingMs={focusSession.remainingMs}
+        focusIsPaused={focusSession.isPaused}
         onOpenFocus={() => setFocusOpen(true)}
       />
+
+      {(focusSession.halfwayAlertTask || focusSession.completionAlertTask || upcomingAlerts.length > 0) && (
+        <div className="sticky top-14 z-20">
+          {focusSession.halfwayAlertTask && (
+            <div className="bg-gradient-to-r from-amber-500 to-amber-600 text-white border-b border-amber-700 shadow-md">
+              <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Clock className="w-5 h-5 shrink-0 animate-pulse" />
+                  <div className="min-w-0">
+                    <span className="text-sm font-bold">
+                      HALFWAY WARNING
+                    </span>{' '}
+                    <span className="text-sm text-amber-100">
+                      ⏳ Halfway through &ldquo;{focusSession.halfwayAlertTask.title}&rdquo;!
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => setFocusOpen(true)}
+                    className="px-3 py-1.5 text-xs font-semibold bg-white/15 hover:bg-white/25 text-white rounded-lg transition"
+                  >
+                    Open Focus
+                  </button>
+                  <button
+                    onClick={() => focusSession.acknowledgeHalfwayAlert()}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white text-amber-800 hover:bg-amber-50 rounded-lg transition shadow-sm"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {focusSession.completionAlertTask && (
+            <div className="bg-gradient-to-r from-red-600 to-red-700 text-white border-b border-red-800 shadow-md">
+              <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Clock className="w-5 h-5 shrink-0 animate-pulse" />
+                  <div className="min-w-0">
+                    <span className="text-sm font-bold">
+                      FOCUS DONE!
+                    </span>{' '}
+                    <span className="text-sm text-red-100">
+                      Timer finished for &ldquo;{focusSession.completionAlertTask.title}&rdquo;.
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => setFocusOpen(true)}
+                    className="px-3 py-1.5 text-xs font-semibold bg-white/15 hover:bg-white/25 text-white rounded-lg transition"
+                  >
+                    Open Focus
+                  </button>
+                  <button
+                    onClick={() => focusSession.acknowledgeCompletionAlert()}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white text-red-700 hover:bg-red-50 rounded-lg transition shadow-sm"
+                  >
+                    <VolumeX className="w-3.5 h-3.5" />
+                    Acknowledge &amp; Silence
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {upcomingAlerts.map((alert) => {
+            const assignedProfile = profileMap.get(alert.appointment.assigned_to);
+            return (
+              <div
+                key={alert.appointment.id}
+                className="bg-amber-50 border-b border-amber-200 text-amber-950 shadow-sm"
+              >
+                <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <BellRing className="w-4 h-4 text-amber-600 shrink-0" />
+                    <div className="text-sm min-w-0">
+                      <span className="font-semibold">
+                        Upcoming Appointment in {alert.minutesUntil > 0 ? `${alert.minutesUntil} min` : '10 min'}:
+                      </span>{' '}
+                      <span className="font-medium">{alert.appointment.client_name}</span>{' '}
+                      at <span className="font-semibold">{formatTime12(alert.appointment.start_time)}</span>
+                      <span className="text-amber-700 text-xs ml-2">
+                        ({alert.appointment.appointment_type}
+                        {assignedProfile ? ` · ${assignedProfile.full_name}` : ''})
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => {
+                        setSelectedDate(parseDateISO(alert.appointment.appointment_date));
+                        setDetailsAppointment(alert.appointment);
+                      }}
+                      className="px-2.5 py-1 text-xs font-medium bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition"
+                    >
+                      View
+                    </button>
+                    <button
+                      onClick={() => dismissUpcomingAlert(alert.appointment.id)}
+                      className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200/70 rounded-lg transition"
+                      title="Dismiss alert"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {view === 'monthly' && (
         <MonthlyView
