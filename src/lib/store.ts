@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase';
-import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus, ReminderAttempt, DeliveryAlert, DeliveryFailureWithDetails, FocusSession, FocusSessionTask, Customer } from '@/types';
-import { isDummyPhoneNumber } from '@/lib/dateUtils';
+import { Appointment, Profile, Company, AppointmentTypeMapping, CompanySnapshot, Task, Subtask, TaskStatusHistoryEntry, TaskActionCategory, TaskStatus, ReminderAttempt, DeliveryAlert, DeliveryFailureWithDetails, FocusSession, FocusSessionTask, Customer, CustomerRole, CUSTOMER_ROLES } from '@/types';
+import { isDummyPhoneNumber, formatPhoneNumber, isValidEmail } from '@/lib/dateUtils';
 
 export interface AuditEntry {
   id: string;
@@ -671,17 +671,33 @@ export async function deleteFocusSession(id: string): Promise<void> {
 
 // --- Customers API ---
 
-export async function getCustomers(): Promise<Customer[]> {
-  const { data, error } = await supabase
-    .from('customers')
-    .select('*')
-    .order('full_name', { ascending: true });
-  if (error) throw error;
-  return (data || []) as Customer[];
+export function isCustomerVisibleForCompany(
+  customer: Pick<Customer, 'company_id' | 'is_global'>,
+  selectedCompanyId?: string | null,
+): boolean {
+  if (customer.is_global) return true;
+  if (!selectedCompanyId) return false;
+  return customer.company_id === selectedCompanyId;
 }
 
-export async function searchCustomers(query: string): Promise<Customer[]> {
-  const all = await getCustomers();
+export async function getCustomers(selectedCompanyId?: string | null): Promise<Customer[]> {
+  let query = supabase
+    .from('customers')
+    .select('*');
+
+  if (selectedCompanyId) {
+    query = query.or(`company_id.eq.${selectedCompanyId},is_global.eq.true`);
+  } else {
+    query = query.eq('is_global', true);
+  }
+
+  const { data, error } = await query.order('full_name', { ascending: true });
+  if (error) throw error;
+  return ((data || []) as Customer[]).filter((c) => isCustomerVisibleForCompany(c, selectedCompanyId));
+}
+
+export async function searchCustomers(query: string, selectedCompanyId?: string | null): Promise<Customer[]> {
+  const all = await getCustomers(selectedCompanyId);
   const q = query.trim().toLowerCase();
   if (!q) return all;
   const digitsOnly = q.replace(/\D/g, '');
@@ -747,8 +763,22 @@ function normalizeName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+function pickBestScopedCustomer(
+  rows: Customer[] | null | undefined,
+  selectedCompanyId?: string | null,
+): Customer | null {
+  const visible = (rows || []).filter((c) => isCustomerVisibleForCompany(c, selectedCompanyId));
+  if (visible.length === 0) return null;
+  if (selectedCompanyId) {
+    const companyMatch = visible.find((c) => c.company_id === selectedCompanyId && !c.is_global);
+    if (companyMatch) return companyMatch;
+  }
+  return visible[0];
+}
+
 /**
- * Finds an existing customer that matches the given name/phone/email.
+ * Finds an existing customer that matches the given name/phone/email within
+ * the active company scope (`company_id = selectedCompanyId OR is_global = true`).
  * Matching priority:
  *   1. Valid, non-dummy 10-digit phone number
  *   2. Lowercase email (if non-empty)
@@ -759,6 +789,7 @@ export async function findMatchingCustomer(
   name: string,
   phone: string,
   email: string,
+  selectedCompanyId?: string | null,
 ): Promise<Customer | null> {
   const trimmedName = (name || '').trim();
   const trimmedEmail = (email || '').trim();
@@ -767,34 +798,32 @@ export async function findMatchingCustomer(
   const phoneDigits = (phone || '').replace(/\D/g, '');
   const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
   if (hasRealPhone) {
-    const { data } = await supabase
-      .from('customers')
-      .select('*')
-      .eq('phone', phone)
-      .maybeSingle<Customer>();
-    if (data) return data;
+    let q = supabase.from('customers').select('*').eq('phone', phone);
+    q = selectedCompanyId ? q.or(`company_id.eq.${selectedCompanyId},is_global.eq.true`) : q.eq('is_global', true);
+    const { data } = await q.limit(10);
+    const match = pickBestScopedCustomer(data as Customer[] | null, selectedCompanyId);
+    if (match) return match;
   }
 
   // 2. Email match
   if (trimmedEmail) {
-    const { data } = await supabase
-      .from('customers')
-      .select('*')
-      .eq('email', trimmedEmail.toLowerCase())
-      .maybeSingle<Customer>();
-    if (data) return data;
+    let q = supabase.from('customers').select('*').eq('email', trimmedEmail.toLowerCase());
+    q = selectedCompanyId ? q.or(`company_id.eq.${selectedCompanyId},is_global.eq.true`) : q.eq('is_global', true);
+    const { data } = await q.limit(10);
+    const match = pickBestScopedCustomer(data as Customer[] | null, selectedCompanyId);
+    if (match) return match;
   }
 
   // 3. Name match — only when no real phone or email available
   if (!hasRealPhone && !trimmedEmail && trimmedName) {
-    const { data } = await supabase
-      .from('customers')
-      .select('*')
-      .ilike('full_name', trimmedName)
-      .maybeSingle<Customer>();
-    if (data && normalizeName(data.full_name) === normalizeName(trimmedName)) {
-      return data;
-    }
+    let q = supabase.from('customers').select('*').ilike('full_name', trimmedName);
+    q = selectedCompanyId ? q.or(`company_id.eq.${selectedCompanyId},is_global.eq.true`) : q.eq('is_global', true);
+    const { data } = await q.limit(10);
+    const exactNameRows = ((data || []) as Customer[]).filter(
+      (c) => normalizeName(c.full_name) === normalizeName(trimmedName),
+    );
+    const match = pickBestScopedCustomer(exactNameRows, selectedCompanyId);
+    if (match) return match;
   }
 
   return null;
@@ -870,4 +899,552 @@ export async function mergeCustomers(keepId: string, duplicateId: string, actorI
     .single<Customer>();
   if (refErr) throw refErr;
   return refreshed;
+}
+
+// --- Customer Role & CSV Import Helpers ---
+
+const ROLE_TAG_LOOKUP = new Map<string, CustomerRole>(
+  CUSTOMER_ROLES.map((r) => [r.toLowerCase(), r]),
+);
+
+export function normalizeCustomerRole(raw?: string | null): CustomerRole {
+  const cleaned = (raw || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (!cleaned) return 'Other';
+  if (cleaned === 'taxpayer' || cleaned === 'primary' || cleaned === 'primarytaxpayer') return 'Taxpayer';
+  if (cleaned === 'spouse') return 'Spouse';
+  if (cleaned === 'dependent') return 'Dependent';
+  if (cleaned === 'other') return 'Other';
+  return ROLE_TAG_LOOKUP.get(cleaned) || 'Other';
+}
+
+export function getCustomerRole(tags?: string[] | null): CustomerRole {
+  if (!Array.isArray(tags) || tags.length === 0) return 'Other';
+  for (const tag of tags) {
+    const lower = (tag || '').trim().toLowerCase();
+    const matched = ROLE_TAG_LOOKUP.get(lower);
+    if (matched) return matched;
+  }
+  return 'Other';
+}
+
+export function setCustomerRoleTag(tags: string[] | null | undefined, role: CustomerRole): string[] {
+  const existing = Array.isArray(tags) ? tags : [];
+  const filtered = existing.filter((t) => !ROLE_TAG_LOOKUP.has((t || '').trim().toLowerCase()));
+  return [role, ...filtered];
+}
+
+export function parseCsvText(csvText: string): { headers: string[]; rows: Record<string, string>[] } {
+  const text = csvText.replace(/^\uFEFF/, '');
+  const rawRows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentField = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"') {
+        if (next === '"') {
+          currentField += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        currentField += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      currentRow.push(currentField.trim());
+      currentField = '';
+    } else if (ch === '\r' || ch === '\n') {
+      if (ch === '\r' && next === '\n') i++;
+      currentRow.push(currentField.trim());
+      if (currentRow.some((cell) => cell.length > 0)) {
+        rawRows.push(currentRow);
+      }
+      currentRow = [];
+      currentField = '';
+    } else {
+      currentField += ch;
+    }
+  }
+
+  if (currentField.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentField.trim());
+    if (currentRow.some((cell) => cell.length > 0)) {
+      rawRows.push(currentRow);
+    }
+  }
+
+  if (rawRows.length === 0) {
+    return { headers: [], rows: [] };
+  }
+
+  const headers = rawRows[0].map((h, idx) => h.trim() || `column_${idx + 1}`);
+  const rows: Record<string, string>[] = [];
+
+  for (let r = 1; r < rawRows.length; r++) {
+    const values = rawRows[r];
+    const obj: Record<string, string> = {};
+    let hasValue = false;
+    headers.forEach((header, idx) => {
+      const val = (values[idx] || '').trim();
+      if (val) hasValue = true;
+      obj[header] = val;
+    });
+    if (hasValue) rows.push(obj);
+  }
+
+  return { headers, rows };
+}
+
+function normalizeHeaderKey(header: string): string {
+  return header.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function getCsvColumnValue(row: Record<string, string>, aliases: string[]): string {
+  const entries = Object.entries(row);
+  for (const alias of aliases) {
+    const found = entries.find(([key]) => normalizeHeaderKey(key) === alias);
+    if (found && found[1]) return found[1].trim();
+  }
+  return '';
+}
+
+export function parseCsvBirthDate(raw: string): string | null {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+
+  // Strip optional timestamp portion (e.g. "01/15/1980 00:00:00")
+  const datePart = trimmed.split(/[\sT]+/)[0];
+
+  // Match MM/DD/YYYY or M/D/YYYY (or with dashes)
+  const mdy = datePart.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (mdy) {
+    const month = Number(mdy[1]);
+    const day = Number(mdy[2]);
+    const year = Number(mdy[3]);
+    if (year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const check = new Date(Date.UTC(year, month - 1, day));
+      if (
+        check.getUTCFullYear() === year &&
+        check.getUTCMonth() === month - 1 &&
+        check.getUTCDate() === day
+      ) {
+        return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+    }
+    return null;
+  }
+
+  // Match ISO YYYY-MM-DD (or YYYY/M/D)
+  const iso = datePart.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+  if (iso) {
+    const year = Number(iso[1]);
+    const month = Number(iso[2]);
+    const day = Number(iso[3]);
+    if (year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const check = new Date(Date.UTC(year, month - 1, day));
+      if (
+        check.getUTCFullYear() === year &&
+        check.getUTCMonth() === month - 1 &&
+        check.getUTCDate() === day
+      ) {
+        return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function parseCsvAddress(raw: string): {
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  state: string;
+  zip_code: string;
+} {
+  const normalized = (raw || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n+/g, ', ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) {
+    return { address_line1: '', address_line2: '', city: '', state: '', zip_code: '' };
+  }
+
+  const parts = normalized.split(',').map((p) => p.trim()).filter(Boolean);
+
+  if (parts.length >= 2) {
+    const last = parts[parts.length - 1];
+    const prev = parts[parts.length - 2];
+
+    // Pattern: "..., City, ST, 12345"
+    if (/^\d{5}(?:-\d{4})?$/.test(last) && /^[A-Za-z]{2}$/.test(prev)) {
+      const zip_code = last;
+      const state = prev.toUpperCase();
+      const before = parts.slice(0, -2);
+      const city = before.length >= 2 ? before[before.length - 1] : '';
+      const streetParts = before.length >= 2 ? before.slice(0, -1) : before;
+      return {
+        address_line1: streetParts[0] || '',
+        address_line2: streetParts.slice(1).join(', '),
+        city,
+        state,
+        zip_code,
+      };
+    }
+
+    // Pattern: "..., ST 12345" or "..., City ST 12345"
+    const stateZipMatch = last.match(/^(?:(.*?)\s+)?([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/);
+    if (stateZipMatch) {
+      const inlineCity = (stateZipMatch[1] || '').trim();
+      const state = stateZipMatch[2].toUpperCase();
+      const zip_code = stateZipMatch[3];
+      const before = parts.slice(0, -1);
+
+      if (inlineCity) {
+        return {
+          address_line1: before[0] || '',
+          address_line2: before.slice(1).join(', '),
+          city: inlineCity,
+          state,
+          zip_code,
+        };
+      }
+
+      const city = before.length >= 2 ? before[before.length - 1] : '';
+      const streetParts = before.length >= 2 ? before.slice(0, -1) : before;
+      return {
+        address_line1: streetParts[0] || '',
+        address_line2: streetParts.slice(1).join(', '),
+        city,
+        state,
+        zip_code,
+      };
+    }
+
+    // Pattern: "..., City, ST"
+    const stateOnlyMatch = last.match(/^(?:(.*?)\s+)?([A-Za-z]{2})$/);
+    if (stateOnlyMatch) {
+      const inlineCity = (stateOnlyMatch[1] || '').trim();
+      const state = stateOnlyMatch[2].toUpperCase();
+      const before = parts.slice(0, -1);
+
+      if (inlineCity) {
+        return {
+          address_line1: before[0] || '',
+          address_line2: before.slice(1).join(', '),
+          city: inlineCity,
+          state,
+          zip_code: '',
+        };
+      }
+
+      const city = before.length >= 2 ? before[before.length - 1] : '';
+      const streetParts = before.length >= 2 ? before.slice(0, -1) : before;
+      return {
+        address_line1: streetParts[0] || '',
+        address_line2: streetParts.slice(1).join(', '),
+        city,
+        state,
+        zip_code: '',
+      };
+    }
+
+    // Generic 3+ comma parts fallback: "street, city, rest"
+    if (parts.length >= 3) {
+      return {
+        address_line1: parts[0],
+        address_line2: parts.slice(1, -2).join(', '),
+        city: parts[parts.length - 2],
+        state: parts[parts.length - 1],
+        zip_code: '',
+      };
+    }
+  }
+
+  // Single-string fallback without commas: "123 Main St Miami FL 33101"
+  const singleLineZip = normalized.match(/^(.*?)\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/);
+  if (singleLineZip) {
+    return {
+      address_line1: singleLineZip[1].trim(),
+      address_line2: '',
+      city: '',
+      state: singleLineZip[2].toUpperCase(),
+      zip_code: singleLineZip[3],
+    };
+  }
+
+  return {
+    address_line1: normalized,
+    address_line2: '',
+    city: '',
+    state: '',
+    zip_code: '',
+  };
+}
+
+export function parseCsvPhone(raw: string): { phone: string; send_whatsapp: boolean } {
+  let digits = (raw || '').replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) {
+    digits = digits.slice(1);
+  }
+  const hasRealPhone = digits.length === 10 && !isDummyPhoneNumber(digits);
+  if (!hasRealPhone) {
+    return { phone: '', send_whatsapp: false };
+  }
+  return {
+    phone: formatPhoneNumber(digits),
+    send_whatsapp: true,
+  };
+}
+
+export interface CsvCustomerInsertRow {
+  full_name: string;
+  phone: string;
+  email: string;
+  notes: string;
+  tags: string[];
+  company_id: string | null;
+  assigned_user_id: string | null;
+  is_global: boolean;
+  send_whatsapp: boolean;
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  state: string;
+  zip_code: string;
+  date_of_birth: string | null;
+  role: CustomerRole;
+}
+
+export interface CsvImportPreview {
+  totalRows: number;
+  readyToImport: CsvCustomerInsertRow[];
+  skippedNoEmail: number;
+  skippedNoName: number;
+  duplicatesSkipped: number;
+  roleCounts: Record<CustomerRole, number>;
+}
+
+export function buildCsvImportPreview(params: {
+  rows: Record<string, string>[];
+  existingCustomers: Customer[];
+  onlyWithValidEmail: boolean;
+  targetCompanyId: string | null;
+  isGlobal: boolean;
+}): CsvImportPreview {
+  const { rows, existingCustomers, onlyWithValidEmail, targetCompanyId, isGlobal } = params;
+
+  const existingKeys = new Set<string>();
+  for (const existing of existingCustomers) {
+    const scopeMatch = isGlobal
+      ? existing.is_global
+      : existing.company_id === targetCompanyId || existing.is_global;
+    if (!scopeMatch) continue;
+    const key = `${normalizeName(existing.full_name || '')}::${(existing.email || '').trim().toLowerCase()}`;
+    existingKeys.add(key);
+  }
+
+  const readyToImport: CsvCustomerInsertRow[] = [];
+  let skippedNoEmail = 0;
+  let skippedNoName = 0;
+  let duplicatesSkipped = 0;
+  const roleCounts: Record<CustomerRole, number> = {
+    Taxpayer: 0,
+    Spouse: 0,
+    Dependent: 0,
+    Other: 0,
+  };
+
+  for (const row of rows) {
+    let rawName = getCsvColumnValue(row, [
+      'clientname',
+      'fullname',
+      'name',
+      'customername',
+      'taxpayername',
+      'contactname',
+    ]);
+    if (!rawName) {
+      const first = getCsvColumnValue(row, ['firstname', 'first', 'fname']);
+      const last = getCsvColumnValue(row, ['lastname', 'last', 'lname']);
+      rawName = [first, last].filter(Boolean).join(' ');
+    }
+    const fullName = rawName.trim().replace(/\s+/g, ' ');
+    if (!fullName) {
+      skippedNoName++;
+      continue;
+    }
+
+    const rawEmail = getCsvColumnValue(row, ['email', 'emailaddress', 'primaryemail']).trim();
+    const hasValidEmail = rawEmail.length > 0 && isValidEmail(rawEmail);
+
+    if (onlyWithValidEmail && !hasValidEmail) {
+      skippedNoEmail++;
+      continue;
+    }
+
+    const cleanEmail = hasValidEmail ? rawEmail.toLowerCase() : '';
+    const dedupeKey = `${normalizeName(fullName)}::${cleanEmail}`;
+    if (existingKeys.has(dedupeKey)) {
+      duplicatesSkipped++;
+      continue;
+    }
+    existingKeys.add(dedupeKey);
+
+    const rawType = getCsvColumnValue(row, [
+      'type',
+      'role',
+      'contacttype',
+      'relationship',
+      'clienttype',
+      'tag',
+      'tags',
+      'category',
+    ]);
+    const role = normalizeCustomerRole(rawType);
+
+    const rawBirthDate = getCsvColumnValue(row, [
+      'birthdate',
+      'dob',
+      'dateofbirth',
+      'birthday',
+    ]);
+    const date_of_birth = parseCsvBirthDate(rawBirthDate);
+
+    const rawAddress = getCsvColumnValue(row, [
+      'address',
+      'mailingaddress',
+      'streetaddress',
+      'fulladdress',
+    ]);
+    const parsedAddr = parseCsvAddress(rawAddress);
+    const colLine1 = getCsvColumnValue(row, ['addressline1', 'address1', 'street', 'street1']);
+    const colLine2 = getCsvColumnValue(row, ['addressline2', 'address2', 'apt', 'suite', 'unit']);
+    const colCity = getCsvColumnValue(row, ['city', 'town']);
+    const colState = getCsvColumnValue(row, ['state', 'st', 'province']);
+    const colZip = getCsvColumnValue(row, ['zipcode', 'zip', 'postalcode', 'postal']);
+
+    const address_line1 = colLine1 || parsedAddr.address_line1;
+    const address_line2 = colLine2 || parsedAddr.address_line2;
+    const city = colCity || parsedAddr.city;
+    const state = (colState || parsedAddr.state).toUpperCase();
+    const zip_code = colZip || parsedAddr.zip_code;
+
+    const rawPhone = getCsvColumnValue(row, [
+      'phonenumber',
+      'phone',
+      'cell',
+      'cellphone',
+      'mobile',
+      'mobilephone',
+      'telephone',
+      'tel',
+      'homephone',
+      'workphone',
+    ]);
+    const { phone, send_whatsapp } = parseCsvPhone(rawPhone);
+
+    roleCounts[role]++;
+    readyToImport.push({
+      full_name: fullName,
+      phone,
+      email: cleanEmail,
+      notes: '',
+      tags: [role],
+      company_id: isGlobal ? null : (targetCompanyId || null),
+      assigned_user_id: null,
+      is_global: isGlobal,
+      send_whatsapp,
+      address_line1,
+      address_line2,
+      city,
+      state,
+      zip_code,
+      date_of_birth,
+      role,
+    });
+  }
+
+  return {
+    totalRows: rows.length,
+    readyToImport,
+    skippedNoEmail,
+    skippedNoName,
+    duplicatesSkipped,
+    roleCounts,
+  };
+}
+
+export async function batchInsertCustomers(
+  rows: CsvCustomerInsertRow[],
+  actorId: string | null,
+): Promise<{ inserted: number; failed: number }> {
+  if (rows.length === 0) return { inserted: 0, failed: 0 };
+
+  const now = new Date().toISOString();
+  const payloads = rows.map((row) => ({
+    full_name: row.full_name,
+    phone: row.phone,
+    email: row.email,
+    notes: row.notes,
+    tags: row.tags,
+    company_id: row.company_id,
+    assigned_user_id: row.assigned_user_id,
+    is_global: row.is_global,
+    send_whatsapp: row.send_whatsapp,
+    address_line1: row.address_line1,
+    address_line2: row.address_line2,
+    city: row.city,
+    state: row.state,
+    zip_code: row.zip_code,
+    date_of_birth: row.date_of_birth,
+    created_by: actorId,
+    created_at: now,
+    updated_at: now,
+  }));
+
+  let inserted = 0;
+  let failed = 0;
+  const CHUNK_SIZE = 100;
+
+  for (let i = 0; i < payloads.length; i += CHUNK_SIZE) {
+    const chunk = payloads.slice(i, i + CHUNK_SIZE);
+    const { data, error } = await supabase
+      .from('customers')
+      .insert(chunk)
+      .select('id');
+
+    if (!error) {
+      inserted += data?.length ?? chunk.length;
+    } else {
+      // Fallback row-by-row so one bad row doesn't fail the whole chunk
+      for (const single of chunk) {
+        const { error: singleErr } = await supabase.from('customers').insert(single);
+        if (singleErr) failed++;
+        else inserted++;
+      }
+    }
+  }
+
+  if (inserted > 0) {
+    await logAudit(
+      'IMPORT',
+      'customers',
+      `CSV imported ${inserted} customer${inserted !== 1 ? 's' : ''}${failed > 0 ? ` (${failed} failed)` : ''}`,
+      null,
+      { inserted, failed, is_global: rows[0]?.is_global ?? false, company_id: rows[0]?.company_id ?? null },
+      actorId,
+    );
+  }
+
+  return { inserted, failed };
 }

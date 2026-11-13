@@ -73,6 +73,15 @@ export interface Appointment {
   updated_at: string;
 }
 
+export type CustomerRole = 'Taxpayer' | 'Spouse' | 'Dependent' | 'Other';
+
+export const CUSTOMER_ROLES: CustomerRole[] = [
+  'Taxpayer',
+  'Spouse',
+  'Dependent',
+  'Other',
+];
+
 export interface Customer {
   id: string;
   full_name: string;

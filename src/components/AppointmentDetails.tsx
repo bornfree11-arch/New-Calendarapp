@@ -4,7 +4,7 @@ import { Appointment, Profile, Company, AppointmentStatus, Customer } from '@/ty
 import { formatTime12, formatDateLong, getInitials, isDummyPhoneNumber } from '@/lib/dateUtils';
 import { supabase } from '@/lib/supabase';
 import { findMatchingCustomer, saveCustomer, searchCustomers } from '@/lib/store';
-import { X, Edit2, Trash2, MapPin, Phone, Mail, Clock, Building, Send, MessageSquare, CheckCircle2, AlertCircle, BookUser, Link2, Loader2, Search } from 'lucide-react';
+import { X, Edit2, Trash2, MapPin, Phone, Mail, Clock, Building, Send, MessageSquare, CheckCircle2, AlertCircle, BookUser, Link2, Loader2, Search, Globe } from 'lucide-react';
 
 interface AppointmentDetailsProps {
   appointment: Appointment;
@@ -150,18 +150,27 @@ export function AppointmentDetails({
       if (!name) { setLinkError('No client name on this appointment.'); return; }
       const phoneDigits = (appointment.client_phone || '').replace(/\D/g, '');
       const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
-      const match = await findMatchingCustomer(name, hasRealPhone ? appointment.client_phone : '', appointment.client_email || '');
+      const match = await findMatchingCustomer(
+        name,
+        hasRealPhone ? appointment.client_phone : '',
+        appointment.client_email || '',
+        appointment.company_id,
+      );
       let customerId: string;
       if (match) {
         customerId = match.id;
       } else {
+        if (!appointment.company_id) {
+          setLinkError('Assign a company to this appointment before saving to the customer book.');
+          return;
+        }
         const newCust = await saveCustomer({
           full_name: name,
           phone: hasRealPhone ? appointment.client_phone : '',
           email: appointment.client_email || '',
           notes: '',
           tags: [],
-          company_id: appointment.company_id || null,
+          company_id: appointment.company_id,
           assigned_user_id: appointment.assigned_to || null,
           is_global: false,
           send_whatsapp: hasRealPhone && appointment.send_whatsapp,
@@ -356,7 +365,9 @@ export function AppointmentDetails({
                         setLinkQuery(e.target.value);
                         if (e.target.value.trim().length >= 1) {
                           setLinkLoading(true);
-                          searchCustomers(e.target.value).then(r => { setLinkResults(r); setLinkLoading(false); }).catch(() => { setLinkResults([]); setLinkLoading(false); });
+                          searchCustomers(e.target.value, appointment.company_id)
+                            .then(r => { setLinkResults(r); setLinkLoading(false); })
+                            .catch(() => { setLinkResults([]); setLinkLoading(false); });
                         } else {
                           setLinkResults([]);
                         }
@@ -378,7 +389,14 @@ export function AppointmentDetails({
                           onClick={() => handleLinkExisting(c)}
                           className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-b-0 text-sm"
                         >
-                          <div className="font-medium text-slate-700">{c.full_name}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-slate-700">{c.full_name}</span>
+                            {c.is_global && (
+                              <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium">
+                                <Globe className="w-2.5 h-2.5" /> Global
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-slate-400">
                             {c.phone && c.phone} {c.phone && c.email && '· '} {c.email && c.email}
                           </div>

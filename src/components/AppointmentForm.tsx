@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { saveAppointment, getAppointmentsByDate, searchAppointments, searchCustomers, buildCompanySnapshot, findMatchingCustomer, saveCustomer } from '@/lib/store';
+import { saveAppointment, getAppointmentsByDate, searchAppointments, searchCustomers, buildCompanySnapshot, findMatchingCustomer, saveCustomer, isCustomerVisibleForCompany } from '@/lib/store';
 import {
   Appointment,
   Profile,
@@ -91,6 +91,8 @@ export function AppointmentForm({
   const [saveToBook, setSaveToBook] = useState(true);
   const [saveAsGlobal, setSaveAsGlobal] = useState(false);
   const [linkedCustomer, setLinkedCustomer] = useState<Customer | null>(null);
+  const [nameSuggestions, setNameSuggestions] = useState<Customer[]>([]);
+  const [showNameSuggestions, setShowNameSuggestions] = useState(false);
 
   const timeSlotOptions = useMemo(() => {
     const slots: string[] = [];
@@ -126,8 +128,13 @@ export function AppointmentForm({
         try {
           const results: { name: string; phone: string; email: string }[] = [];
           const seen = new Set<string>();
+          if (!companyId) {
+            setClientSearchResults([]);
+            return;
+          }
           const all = await searchAppointments(clientSearchQuery);
           for (const row of all) {
+            if (row.company_id !== companyId) continue;
             const key = `${row.client_name}-${row.client_phone}`;
             if (!seen.has(key)) {
               seen.add(key);
@@ -149,27 +156,46 @@ export function AppointmentForm({
     } else {
       setClientSearchResults([]);
     }
-  }, [clientSearchQuery]);
+  }, [clientSearchQuery, companyId]);
 
   useEffect(() => {
-    if (customerSearchQuery.length >= 1) {
-      setCustomerSearchLoading(true);
-      const timer = setTimeout(async () => {
-        try {
-          const results = await searchCustomers(customerSearchQuery);
-          const filtered = results.filter(c => c.is_global || !c.company_id || c.company_id === companyId);
-          setCustomerSearchResults(filtered);
-        } catch {
-          setCustomerSearchResults([]);
-        } finally {
-          setCustomerSearchLoading(false);
-        }
-      }, 300);
-      return () => clearTimeout(timer);
-    } else {
-      setCustomerSearchResults([]);
+    if (!showCustomerSearch) return;
+    setCustomerSearchLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const results = await searchCustomers(customerSearchQuery, companyId);
+        setCustomerSearchResults(results);
+      } catch {
+        setCustomerSearchResults([]);
+      } finally {
+        setCustomerSearchLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [customerSearchQuery, companyId, showCustomerSearch]);
+
+  useEffect(() => {
+    if (!showNameSuggestions || selectedCustomerId || clientName.trim().length < 2) {
+      setNameSuggestions([]);
+      return;
     }
-  }, [customerSearchQuery, companyId]);
+    const timer = setTimeout(async () => {
+      try {
+        const results = await searchCustomers(clientName.trim(), companyId);
+        setNameSuggestions(results.slice(0, 8));
+      } catch {
+        setNameSuggestions([]);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [clientName, companyId, selectedCustomerId, showNameSuggestions]);
+
+  useEffect(() => {
+    if (linkedCustomer && !isCustomerVisibleForCompany(linkedCustomer, companyId)) {
+      setSelectedCustomerId(null);
+      setLinkedCustomer(null);
+    }
+  }, [companyId, linkedCustomer]);
 
   function handleClientSearch(query: string) {
     setClientSearchQuery(query);
@@ -182,6 +208,7 @@ export function AppointmentForm({
     setClientEmail(client.email);
     setClientSearchQuery('');
     setShowClientSearch(false);
+    setShowNameSuggestions(false);
   }
 
   function selectCustomerFromDirectory(customer: Customer) {
@@ -193,6 +220,8 @@ export function AppointmentForm({
     setSendWhatsapp(customer.send_whatsapp && !isDummyPhoneNumber(customer.phone || '') && !!customer.phone);
     setCustomerSearchQuery('');
     setShowCustomerSearch(false);
+    setShowNameSuggestions(false);
+    setNameSuggestions([]);
     setUpdateCustomerRecord(true);
   }
 
@@ -303,46 +332,28 @@ export function AppointmentForm({
         }
       }
 
-      // If editing an existing appointment with no customer linked, offer one-click save to customer book
+      // If creating or editing an appointment with no customer linked, link or save to customer book
       let resolvedCustomerId = selectedCustomerId;
 
-      if (appointment && !resolvedCustomerId && saveToBook && clientName.trim()) {
+      if (!resolvedCustomerId && saveToBook && clientName.trim()) {
         const phoneDigits = (clientPhone || '').replace(/\D/g, '');
         const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
-        const match = await findMatchingCustomer(clientName.trim(), hasRealPhone ? clientPhone : '', clientEmail || '');
+        const match = await findMatchingCustomer(
+          clientName.trim(),
+          hasRealPhone ? clientPhone : '',
+          clientEmail || '',
+          companyId,
+        );
         if (match) {
           resolvedCustomerId = match.id;
-        } else {
+        } else if (companyId || saveAsGlobal) {
           const newCust = await saveCustomer({
             full_name: clientName.trim(),
             phone: hasRealPhone ? clientPhone : '',
             email: clientEmail || '',
             notes: '',
             tags: [],
-            company_id: companyId || null,
-            assigned_user_id: assignedTo || null,
-            is_global: saveAsGlobal,
-            send_whatsapp: hasRealPhone && sendWhatsapp,
-          }, currentUser?.id || null);
-          resolvedCustomerId = newCust.id;
-        }
-      }
-
-      // If creating a new appointment with no customer linked and save-to-book is checked
-      if (!appointment && !resolvedCustomerId && saveToBook && clientName.trim()) {
-        const phoneDigits = (clientPhone || '').replace(/\D/g, '');
-        const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
-        const match = await findMatchingCustomer(clientName.trim(), hasRealPhone ? clientPhone : '', clientEmail || '');
-        if (match) {
-          resolvedCustomerId = match.id;
-        } else {
-          const newCust = await saveCustomer({
-            full_name: clientName.trim(),
-            phone: hasRealPhone ? clientPhone : '',
-            email: clientEmail || '',
-            notes: '',
-            tags: [],
-            company_id: companyId || null,
+            company_id: saveAsGlobal ? null : companyId,
             assigned_user_id: assignedTo || null,
             is_global: saveAsGlobal,
             send_whatsapp: hasRealPhone && sendWhatsapp,
@@ -579,9 +590,13 @@ export function AppointmentForm({
                   value={customerSearchQuery}
                   onChange={(e) => setCustomerSearchQuery(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
-                  placeholder="Search customer directory by name, phone, or email..."
+                  placeholder={
+                    assignedCompany
+                      ? `Search ${assignedCompany.name} + Global customers...`
+                      : 'Search Global customers...'
+                  }
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
-                 />
+                />
                 {customerSearchLoading && (
                   <div className="absolute right-3 top-1/2 -translate-y-1/2">
                     <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
@@ -596,15 +611,26 @@ export function AppointmentForm({
                         onClick={() => selectCustomerFromDirectory(c)}
                         className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-b-0 text-sm"
                       >
-                        <div className="font-medium text-slate-700">{c.full_name}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-slate-700">{c.full_name}</span>
+                          {c.is_global && (
+                            <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium">
+                              <Globe className="w-2.5 h-2.5" /> Global
+                            </span>
+                          )}
+                        </div>
                         <div className="text-xs text-slate-400">
                           {c.phone && `${c.phone}`}
                           {c.phone && c.email && ' · '}
                           {c.email && c.email}
-                          {c.is_global && ' · Global'}
                         </div>
                       </button>
                     ))}
+                  </div>
+                )}
+                {!customerSearchLoading && customerSearchResults.length === 0 && (
+                  <div className="text-xs text-slate-400 mt-1.5 px-1">
+                    No matching customers in {assignedCompany ? `${assignedCompany.name} or Global` : 'Global customers'}.
                   </div>
                 )}
               </div>
@@ -656,18 +682,25 @@ export function AppointmentForm({
                   </span>
                 </label>
                 {saveToBook && (
-                  <label className="flex items-center gap-2 cursor-pointer select-none ml-6">
-                    <input
-                      type="checkbox"
-                      checked={saveAsGlobal}
-                      onChange={(e) => setSaveAsGlobal(e.target.checked)}
-                      className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
-                    />
-                    <span className="text-xs text-slate-600 flex items-center gap-1">
-                      <Globe className="w-3 h-3 text-blue-600" />
-                      Global Customer
-                    </span>
-                  </label>
+                  <div className="ml-6 space-y-1">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={saveAsGlobal}
+                        onChange={(e) => setSaveAsGlobal(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                      />
+                      <span className="text-xs text-slate-600 flex items-center gap-1">
+                        <Globe className="w-3 h-3 text-blue-600" />
+                        Global Customer (visible across all companies)
+                      </span>
+                    </label>
+                    {!companyId && !saveAsGlobal && (
+                      <div className="text-[11px] text-amber-600">
+                        Select an Associated Company or enable Global Customer to save to the directory.
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -705,16 +738,52 @@ export function AppointmentForm({
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
+              <div className="relative">
                 <label className="block text-xs font-medium text-slate-600 mb-1">Name *</label>
                 <input
                   type="text"
                   value={clientName}
-                  onChange={(e) => setClientName(e.target.value)}
+                  onChange={(e) => {
+                    setClientName(e.target.value);
+                    setShowNameSuggestions(true);
+                  }}
+                  onFocus={() => setShowNameSuggestions(true)}
+                  onBlur={() => setTimeout(() => setShowNameSuggestions(false), 150)}
                   required
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
                   placeholder="John Doe"
                 />
+                {showNameSuggestions && !selectedCustomerId && nameSuggestions.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 max-h-44 overflow-y-auto">
+                    {nameSuggestions.map(c => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          selectCustomerFromDirectory(c);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-b-0 text-sm"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-slate-700">{c.full_name}</span>
+                          {c.is_global && (
+                            <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium">
+                              <Globe className="w-2.5 h-2.5" /> Global
+                            </span>
+                          )}
+                        </div>
+                        {(c.phone || c.email) && (
+                          <div className="text-xs text-slate-400">
+                            {c.phone && c.phone}
+                            {c.phone && c.email && ' · '}
+                            {c.email && c.email}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Phone</label>
