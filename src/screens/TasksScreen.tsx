@@ -4,13 +4,11 @@ import { getTasks } from '@/lib/store';
 import { Task, TaskStatus, TASK_STATUSES } from '@/types';
 import { TaskDetailsModal } from '@/components/TaskDetailsModal';
 import { CATEGORY_COLORS, STATUS_COLORS } from '@/components/TaskDetailsModal';
-import { formatDateLong, parseDateISO, formatDateISO, isToday } from '@/lib/dateUtils';
+import { formatDateLong, parseDateISO, formatDateISO, isEmbedded } from '@/lib/dateUtils';
 import {
   ChevronLeft,
-  ChevronRight,
   LogOut,
   Plus,
-  Check,
   Loader2,
   ListTodo,
   Calendar as CalendarIcon,
@@ -26,7 +24,6 @@ interface TasksScreenProps {
 type StatusFilter = 'all' | TaskStatus;
 
 export function TasksScreen({ onBackToCalendar, onSignOut, onOpenFocus }: TasksScreenProps) {
-  const { profile } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -34,6 +31,7 @@ export function TasksScreen({ onBackToCalendar, onSignOut, onOpenFocus }: TasksS
   const [modalTaskId, setModalTaskId] = useState<string | null>(null);
   const [modalIsNew, setModalIsNew] = useState(false);
   const [dataVersion, setDataVersion] = useState(0);
+  const embedded = isEmbedded();
 
   const loadTasks = useCallback(async () => {
     setLoading(true);
@@ -86,7 +84,7 @@ export function TasksScreen({ onBackToCalendar, onSignOut, onOpenFocus }: TasksS
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-        <div className="max-w-[900px] mx-auto px-4 h-14 flex items-center justify-between gap-4">
+        <div className={`max-w-[900px] mx-auto ${embedded ? 'px-2 h-12' : 'px-4 h-14'} flex items-center justify-between gap-4`}>
           <button
             onClick={onBackToCalendar}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
@@ -108,7 +106,7 @@ export function TasksScreen({ onBackToCalendar, onSignOut, onOpenFocus }: TasksS
         </div>
       </header>
 
-      <div className="max-w-[900px] mx-auto px-4 py-4">
+      <div className={`max-w-[900px] mx-auto ${embedded ? 'px-2 py-2' : 'px-4 py-4'}`}>
         {error && (
           <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
             {error}

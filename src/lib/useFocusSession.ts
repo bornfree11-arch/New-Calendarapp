@@ -243,6 +243,7 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
         sendDesktopNotification('⏳ Halfway there!', {
           body: `50% time remaining on "${currentTask.title}".`,
           tag: `focus-halfway-${key}`,
+          urgency: 'normal',
         });
       }
     }
@@ -276,6 +277,7 @@ export function useFocusSession({ profile, authLoading }: UseFocusSessionArgs) {
           body: `"${currentTask.title}" — Focus timer finished!`,
           tag: `focus-expired-${session.id}-${session.current_task_index}`,
           requireInteraction: true,
+          urgency: 'high',
         });
       }
     } else {

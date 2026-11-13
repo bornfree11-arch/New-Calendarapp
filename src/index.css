@@ -1,3 +1,14 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+html.is-embedded, body.is-embedded {
+  background-color: #f8fafc;
+  overflow-x: hidden;
+  height: 100%;
+}
+
+html.is-embedded #root {
+  min-height: 100%;
+}
+

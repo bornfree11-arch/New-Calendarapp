@@ -88,6 +88,7 @@ export function useAppointmentAlerts({ profile, authLoading, dataVersion }: UseA
                 body: `${appt.appointment_type} · Starts in ${minutesUntil} min`,
                 tag: `appt-prealert-${appt.id}`,
                 requireInteraction: true,
+                urgency: 'high',
               },
             );
 

@@ -9,6 +9,7 @@ import {
   addMonths,
   formatDateISO,
   MONTH_NAMES,
+  isEmbedded,
 } from '@/lib/dateUtils';
 import {
   ChevronLeft,
@@ -39,6 +40,7 @@ export function MonthlyView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
+  const embedded = isEmbedded();
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 1024);
@@ -103,7 +105,7 @@ export function MonthlyView({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-4">
+      <div className={`max-w-[1600px] mx-auto ${embedded ? 'px-2 lg:px-3 py-2' : 'px-4 lg:px-6 py-4'}`}>
         <div className="flex flex-col items-center justify-center mb-4 gap-2">
           <div className="flex items-center gap-3">
             <button

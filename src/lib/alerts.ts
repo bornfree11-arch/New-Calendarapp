@@ -91,8 +91,26 @@ export function useNotificationPermission() {
 
 export function sendDesktopNotification(
   title: string,
-  options?: { body?: string; tag?: string; requireInteraction?: boolean },
+  options?: { body?: string; tag?: string; requireInteraction?: boolean; urgency?: 'normal' | 'high' },
 ): void {
+  if (typeof window !== 'undefined' && window.self !== window.top) {
+    try {
+      const urgency = options?.urgency || (options?.requireInteraction ? 'high' : 'normal');
+      window.parent.postMessage(
+        {
+          source: 'sf-calendar',
+          type: 'CALENDAR_ALERT',
+          title,
+          body: options?.body,
+          urgency,
+        },
+        '*'
+      );
+    } catch {
+      // Ignore postMessage errors
+    }
+  }
+
   if (!isNotificationSupported() || Notification.permission !== 'granted') return;
 
   try {

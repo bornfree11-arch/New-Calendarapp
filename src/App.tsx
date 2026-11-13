@@ -33,7 +33,7 @@ import { TimerExpiredPopup } from '@/components/TimerExpiredPopup';
 import { useFocusSession } from '@/lib/useFocusSession';
 import { useAppointmentAlerts } from '@/lib/useAppointmentAlerts';
 import { getNotificationPermission, requestNotificationPermission } from '@/lib/alerts';
-import { addDays, parseDateISO, formatDateISO, formatTime12 } from '@/lib/dateUtils';
+import { addDays, parseDateISO, formatDateISO, formatTime12, isEmbedded } from '@/lib/dateUtils';
 import { Loader2, Clock, VolumeX, BellRing, X } from 'lucide-react';
 
 type View = 'monthly' | 'daily' | 'tasks';
@@ -45,6 +45,14 @@ function AppContent() {
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [view, setView] = useState<View>('monthly');
   const [selectedDate, setSelectedDate] = useState(new Date());
+  const embedded = isEmbedded();
+
+  useEffect(() => {
+    if (embedded) {
+      document.documentElement.classList.add('is-embedded');
+      document.body.classList.add('is-embedded');
+    }
+  }, [embedded]);
   const [formState, setFormState] = useState<{
     open: boolean;
     appointment: Appointment | null;
