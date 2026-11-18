@@ -37,6 +37,7 @@ const STATUS_BORDER: Record<AppointmentStatus, string> = {
   'Completed': 'ring-1 ring-green-300',
   'Cancelled': 'ring-1 ring-red-300 opacity-60',
   'No-show': 'ring-1 ring-amber-300',
+  'Rescheduled': 'ring-1 ring-purple-300',
 };
 
 const INCOMPLETE_STATUSES: TaskStatus[] = ['Not Started', 'In Progress', 'On Hold'];

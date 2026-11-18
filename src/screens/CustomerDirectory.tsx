@@ -13,18 +13,22 @@ import {
   getCustomerRole,
   setCustomerRoleTag,
   parseCsvText,
+  detectHeaderMapping,
   buildCsvImportPreview,
-  batchInsertCustomers,
+  batchImportCustomers,
 } from '@/lib/store';
 import { useAuth } from '@/context/AuthContext';
-import { Customer, Company, Profile, CustomerRole, CUSTOMER_ROLES } from '@/types';
+import { Customer, Company, Profile, CustomerRole, CUSTOMER_ROLES, Appointment } from '@/types';
 import { formatPhoneNumber, isValidPhoneNumber, isValidEmail, isDummyPhoneNumber } from '@/lib/dateUtils';
-import { X, Plus, Pencil, Trash2, Users, Search, Loader2, Phone, Mail, MessageCircle, Building2, UserCircle, Globe, GitMerge, Download, MapPin, Cake, Upload, Send, FileSpreadsheet, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { X, Plus, Pencil, Trash2, Users, Search, Loader2, Phone, Mail, MessageCircle, Building2, UserCircle, Globe, GitMerge, Download, MapPin, Cake, Upload, Send, FileSpreadsheet, CheckCircle2, AlertTriangle, History } from 'lucide-react';
+import { CustomerHistoryModal } from '@/components/CustomerHistoryModal';
 import { supabase } from '@/lib/supabase';
 
 interface CustomerDirectoryProps {
   onClose: () => void;
   onDataChange?: () => void;
+  onOpenAppointment?: (appointment: Appointment) => void;
+  dataVersion?: number;
 }
 
 type ScopeFilter = 'company_and_global' | 'company_only' | 'global_only';
@@ -42,7 +46,7 @@ function formatBirthDateDisplay(dob: string): string {
   return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryProps) {
+export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, dataVersion = 0 }: CustomerDirectoryProps) {
   const { profile: currentUser } = useAuth();
   const isAdmin = currentUser?.role === 'admin';
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -65,6 +69,8 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
   const [showCsvImportModal, setShowCsvImportModal] = useState(false);
   const [showResendSyncModal, setShowResendSyncModal] = useState(false);
   const [mergingCustomerId, setMergingCustomerId] = useState<string | null>(null);
+  const [historyCustomer, setHistoryCustomer] = useState<Customer | null>(null);
+  const [confirmDeleteCustomerId, setConfirmDeleteCustomerId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -74,8 +80,15 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
         if (!active) return;
         setCompanies(comps);
         setProfiles(profs);
+
+        const currentProfile = profs.find(p => p.id === currentUser?.id) || currentUser;
+        const userDefaultCompanyId = currentProfile?.default_company_id;
+        const defaultCompanyExists = userDefaultCompanyId && comps.some(c => c.id === userDefaultCompanyId);
+
         const firstActive = comps.find(c => c.is_active)?.id || comps[0]?.id || '';
-        setSelectedCompanyId(prev => prev || firstActive);
+        const initialCompany = defaultCompanyExists ? userDefaultCompanyId! : firstActive;
+
+        setSelectedCompanyId(prev => prev || initialCompany);
         setRefsLoaded(true);
       } catch (err) {
         if (!active) return;
@@ -84,7 +97,7 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
       }
     })();
     return () => { active = false; };
-  }, []);
+  }, [currentUser]);
 
   const loadData = useCallback(async (query?: string) => {
     if (!refsLoaded) return;
@@ -112,10 +125,11 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
   }, [searchQuery, selectedCompanyId, refsLoaded, loadData]);
 
   async function handleDelete(customer: Customer) {
-    if (!confirm(`Delete "${customer.full_name}"? This will not delete their appointments but will unlink them.`)) return;
     setActionLoading(true);
+    setError('');
     try {
       await deleteCustomer(customer.id, currentUser?.id || null);
+      setConfirmDeleteCustomerId(null);
       await loadData(searchQuery);
       onDataChange?.();
     } catch (err) {
@@ -223,7 +237,7 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
     if (scopeFilter === 'company_only') {
       if (!selectedCompanyId || c.company_id !== selectedCompanyId || c.is_global) return false;
     } else if (scopeFilter === 'global_only') {
-      if (!c.is_global) return false;
+      if (!c.is_global && c.company_id !== null) return false;
     }
     if (filterEmployeeId && c.assigned_user_id !== filterEmployeeId) return false;
     return true;
@@ -439,7 +453,7 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
                           </span>
                         );
                       })()}
-                      {customer.is_global && (
+                      {(customer.is_global || customer.company_id === null) && (
                         <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/70 rounded-full font-medium">
                           <Globe className="w-3 h-3" /> Global
                         </span>
@@ -470,7 +484,7 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
                     </div>
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 mt-1">
                       <span className="text-xs text-slate-500 flex items-center gap-1">
-                        <Building2 className="w-3 h-3" /> {customer.is_global ? 'Global (All companies)' : companyName(customer.company_id)}
+                        <Building2 className="w-3 h-3" /> {(customer.is_global || customer.company_id === null) ? 'Global (All companies)' : companyName(customer.company_id)}
                       </span>
                       {(customer.city || customer.state) && (
                         <span className="text-xs text-slate-500 flex items-center gap-1">
@@ -498,29 +512,60 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
                     )}
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => setMergingCustomerId(customer.id)}
-                      className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition"
-                      title="Merge another customer into this one"
-                    >
-                      <GitMerge className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => setEditingCustomer(customer)}
-                      className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition"
-                      title="Edit"
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
-                    {isAdmin && (
-                      <button
-                        onClick={() => handleDelete(customer)}
-                        disabled={actionLoading}
-                        className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition disabled:opacity-30"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                    {confirmDeleteCustomerId === customer.id ? (
+                      <div className="flex items-center gap-1 bg-red-50 p-1.5 rounded-lg border border-red-200">
+                        <span className="text-xs font-medium text-red-700 px-1">Confirm delete?</span>
+                        <button
+                          onClick={() => handleDelete(customer)}
+                          disabled={actionLoading}
+                          className="px-2.5 py-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-medium rounded transition flex items-center gap-1"
+                        >
+                          {actionLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+                          Confirm
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteCustomerId(null)}
+                          disabled={actionLoading}
+                          className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-medium rounded transition"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => setHistoryCustomer(customer)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg transition"
+                          title="View Customer History (Appointments, Emails & WhatsApp)"
+                        >
+                          <History className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">History</span>
+                        </button>
+                        <button
+                          onClick={() => setMergingCustomerId(customer.id)}
+                          className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition"
+                          title="Merge another customer into this one"
+                        >
+                          <GitMerge className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setEditingCustomer(customer)}
+                          className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition"
+                          title="Edit"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => setConfirmDeleteCustomerId(customer.id)}
+                            disabled={actionLoading}
+                            className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition disabled:opacity-30"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -569,6 +614,17 @@ export function CustomerDirectory({ onClose, onDataChange }: CustomerDirectoryPr
           visibleCustomers={filteredCustomers}
           scopeLabel={scopeIndicatorText}
           onClose={() => setShowResendSyncModal(false)}
+        />
+      )}
+
+      {historyCustomer && (
+        <CustomerHistoryModal
+          customer={historyCustomer}
+          companies={companies}
+          profiles={profiles}
+          onClose={() => setHistoryCustomer(null)}
+          onOpenAppointment={onOpenAppointment}
+          dataVersion={dataVersion}
         />
       )}
     </div>
@@ -666,7 +722,7 @@ function CustomerForm({ customer, selectedCompanyId, companies, profiles, onClos
   const [notes, setNotes] = useState(customer?.notes || '');
   const [companyId, setCompanyId] = useState<string>(customer?.company_id || selectedCompanyId || '');
   const [assignedUserId, setAssignedUserId] = useState<string>(customer?.assigned_user_id || '');
-  const [isGlobal, setIsGlobal] = useState(customer?.is_global ?? false);
+  const [isGlobal, setIsGlobal] = useState(customer ? (customer.is_global || customer.company_id === null) : false);
   const [sendWhatsapp, setSendWhatsapp] = useState(customer?.send_whatsapp ?? true);
   const [role, setRole] = useState<CustomerRole>(getCustomerRole(customer?.tags));
   const [dateOfBirth, setDateOfBirth] = useState<string>(customer?.date_of_birth || '');
@@ -677,7 +733,6 @@ function CustomerForm({ customer, selectedCompanyId, companies, profiles, onClos
   const [zipCode, setZipCode] = useState(customer?.zip_code || '');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-
   const whatsappDisabled = !phone || isDummyPhoneNumber(phone);
 
   const availableCompanies = companies.filter(
@@ -933,19 +988,63 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
 }) {
   const { profile: currentUser } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [columnMapping, setColumnMapping] = useState<{
+    clientName: string;
+    birthDate: string;
+    address: string;
+    phone: string;
+    type: string;
+    email: string;
+  }>({
+    clientName: '',
+    birthDate: '',
+    address: '',
+    phone: '',
+    type: '',
+    email: '',
+  });
+
   const [targetCompanyId, setTargetCompanyId] = useState<string>(selectedCompanyId || '');
   const [importAsGlobal, setImportAsGlobal] = useState(false);
-  const [onlyWithValidEmail, setOnlyWithValidEmail] = useState(true);
+  const [onlyWithValidEmail, setOnlyWithValidEmail] = useState(false);
   const [fileName, setFileName] = useState('');
   const [parsedHeaders, setParsedHeaders] = useState<string[]>([]);
   const [parsedRows, setParsedRows] = useState<Record<string, string>[]>([]);
   const [existingCustomers, setExistingCustomers] = useState<Customer[]>([]);
   const [loadingScope, setLoadingScope] = useState(false);
-  const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
-
+  const [importing, setImporting] = useState(false);
   const availableCompanies = companies.filter(c => c.is_active || c.id === selectedCompanyId);
   const hasValidTarget = importAsGlobal || Boolean(targetCompanyId);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const autoMapping = useMemo(() => detectHeaderMapping(parsedHeaders), [parsedHeaders]);
+  const showColumnMappingDropdown = parsedHeaders.length > 0 && !autoMapping.isClientNameAutoMatched;
+
+  useEffect(() => {
+    if (parsedHeaders.length > 0) {
+      if (!autoMapping.isClientNameAutoMatched) {
+        setColumnMapping(m => ({
+          clientName: m.clientName || parsedHeaders[0] || '',
+          birthDate: m.birthDate || autoMapping.birthDate || '',
+          address: m.address || autoMapping.address || '',
+          phone: m.phone || autoMapping.phone || '',
+          type: m.type || autoMapping.type || '',
+          email: m.email || autoMapping.email || '',
+        }));
+      } else {
+        setColumnMapping({
+          clientName: autoMapping.clientName,
+          birthDate: autoMapping.birthDate,
+          address: autoMapping.address,
+          phone: autoMapping.phone,
+          type: autoMapping.type,
+          email: autoMapping.email,
+        });
+      }
+    }
+  }, [autoMapping]);
 
   useEffect(() => {
     let active = true;
@@ -970,9 +1069,7 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
     return () => { active = false; };
   }, [targetCompanyId, importAsGlobal, hasValidTarget]);
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  function handleFileProcess(file: File) {
     setError('');
     setFileName(file.name);
     const reader = new FileReader();
@@ -998,6 +1095,38 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
     reader.readAsText(file);
   }
 
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) handleFileProcess(file);
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      handleFileProcess(file);
+    }
+  }
+
   const preview = useMemo(() => {
     if (parsedRows.length === 0) return null;
     return buildCsvImportPreview({
@@ -1006,23 +1135,25 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
       onlyWithValidEmail,
       targetCompanyId: importAsGlobal ? null : (targetCompanyId || null),
       isGlobal: importAsGlobal,
+      columnMapping,
     });
-  }, [parsedRows, existingCustomers, onlyWithValidEmail, targetCompanyId, importAsGlobal]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedRows, existingCustomers, onlyWithValidEmail, targetCompanyId, importAsGlobal, columnMapping]);
 
   async function handleConfirmImport() {
     if (!hasValidTarget) {
       setError('Please select a Target Company or enable Import as Global Customers.');
       return;
     }
-    if (!preview || preview.readyToImport.length === 0) {
-      setError('There are no new valid rows ready to import.');
+    if (!preview || (preview.readyToImport.length === 0 && preview.readyToUpdate.length === 0)) {
+      setError('There are no rows ready to import or update.');
       return;
     }
     setImporting(true);
     setError('');
     try {
-      const result = await batchInsertCustomers(preview.readyToImport, currentUser?.id || null);
-      onImported(result);
+      const result = await batchImportCustomers(preview.readyToImport, preview.readyToUpdate, currentUser?.id || null);
+      onImported({ inserted: result.inserted + result.updated, failed: result.failed });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to import customers from CSV.');
     } finally {
@@ -1078,10 +1209,10 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
             <label className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-200 bg-white cursor-pointer select-none">
               <div>
                 <span className="text-sm text-slate-700 font-medium block">
-                  Import only rows with a valid Email address (recommended)
+                  Import only rows with a valid Email address
                 </span>
                 <span className="text-xs text-slate-500">
-                  Imports Taxpayers and any Spouse/Dependent/Other rows with an email; skips blank-email rows.
+                  Optional. Unchecked by default to support phone-only / WhatsApp customers.
                 </span>
               </div>
               <input
@@ -1108,46 +1239,136 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
               onChange={handleFileChange}
               className="hidden"
             />
-            <button
-              type="button"
+            <div
+              onDragOver={handleDragOver}
+              onDragEnter={handleDragEnter}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
-              className="w-full border-2 border-dashed border-slate-300 hover:border-indigo-400 hover:bg-indigo-50/40 rounded-xl px-4 py-6 text-center transition"
+              className={`w-full border-2 border-dashed rounded-xl px-4 py-6 text-center cursor-pointer transition ${
+                isDragging
+                  ? 'border-indigo-600 bg-indigo-50/70 scale-[1.01]'
+                  : 'border-slate-300 hover:border-indigo-400 hover:bg-indigo-50/40'
+              }`}
             >
               <Upload className="w-6 h-6 text-indigo-600 mx-auto mb-2" />
               <div className="text-sm font-medium text-slate-700">
-                {fileName ? `Selected: ${fileName}` : 'Choose a .csv file to upload'}
+                {fileName ? `Selected: ${fileName}` : 'Choose a .csv file or drag & drop here'}
               </div>
               <div className="text-xs text-slate-500 mt-1">
                 Supports columns: Birth Date, Client Name, Address, Phone Number, Type, Email
               </div>
-            </button>
+            </div>
           </div>
+
+          {showColumnMappingDropdown && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 space-y-2">
+              <div className="text-xs font-semibold text-amber-800 flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                Client Name column not automatically matched. Please map your CSV columns below:
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Client Name *</label>
+                  <select
+                    value={columnMapping.clientName}
+                    onChange={(e) => setColumnMapping(m => ({ ...m, clientName: e.target.value }))}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                  >
+                    <option value="">Select column...</option>
+                    {parsedHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Phone Number</label>
+                  <select
+                    value={columnMapping.phone}
+                    onChange={(e) => setColumnMapping(m => ({ ...m, phone: e.target.value }))}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                  >
+                    <option value="">Select column...</option>
+                    {parsedHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Email</label>
+                  <select
+                    value={columnMapping.email}
+                    onChange={(e) => setColumnMapping(m => ({ ...m, email: e.target.value }))}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                  >
+                    <option value="">Select column...</option>
+                    {parsedHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Birth Date</label>
+                  <select
+                    value={columnMapping.birthDate}
+                    onChange={(e) => setColumnMapping(m => ({ ...m, birthDate: e.target.value }))}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                  >
+                    <option value="">Select column...</option>
+                    {parsedHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Address</label>
+                  <select
+                    value={columnMapping.address}
+                    onChange={(e) => setColumnMapping(m => ({ ...m, address: e.target.value }))}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                  >
+                    <option value="">Select column...</option>
+                    {parsedHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Type / Role</label>
+                  <select
+                    value={columnMapping.type}
+                    onChange={(e) => setColumnMapping(m => ({ ...m, type: e.target.value }))}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs bg-white"
+                  >
+                    <option value="">Select column...</option>
+                    {parsedHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
 
           {loadingScope && (
             <div className="text-xs text-slate-500 flex items-center gap-2">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking existing customers in scope for duplicates...
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking existing customers in scope for matching/updates...
             </div>
           )}
 
           {preview && (
             <div className="space-y-3">
               <div className="flex items-center justify-between text-xs text-slate-500">
-                <span>Detected {parsedHeaders.length} columns · {preview.totalRows} CSV rows</span>
-                <span>Duplicate check: Email + Full Name (case-insensitive)</span>
+                <span>
+                  Detected {parsedHeaders.length} columns ({parsedHeaders.slice(0, 2).join(', ')}{parsedHeaders.length > 2 ? '...' : ''}) · {preview.totalRows} CSV rows
+                </span>
+                <span>Match: Phone + Full Name (Auto-Updates Existing)</span>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5">
-                  <div className="text-xs font-medium text-emerald-700">Ready to Import</div>
+                  <div className="text-xs font-medium text-emerald-700">New to Import</div>
                   <div className="text-xl font-bold text-emerald-800">{preview.readyToImport.length}</div>
                 </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
-                  <div className="text-xs font-medium text-slate-600">Skipped (No Email)</div>
-                  <div className="text-xl font-bold text-slate-800">{preview.skippedNoEmail}</div>
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5">
+                  <div className="text-xs font-medium text-indigo-700">To Update</div>
+                  <div className="text-xl font-bold text-indigo-800">{preview.readyToUpdate.length}</div>
                 </div>
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
-                  <div className="text-xs font-medium text-amber-700">Duplicates Skipped</div>
-                  <div className="text-xl font-bold text-amber-800">{preview.duplicatesSkipped}</div>
+                  <div className="text-xs font-medium text-amber-700">Skipped (Phone)</div>
+                  <div className="text-xl font-bold text-amber-800">{preview.skippedNoValidPhone}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                  <div className="text-xs font-medium text-slate-600">Skipped (Email)</div>
+                  <div className="text-xl font-bold text-slate-800">{preview.skippedNoEmail}</div>
                 </div>
               </div>
 
@@ -1166,17 +1387,23 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
                 </div>
               )}
 
-              {preview.readyToImport.length > 0 && (
+              {(preview.readyToImport.length > 0 || preview.readyToUpdate.length > 0) && (
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <div className="bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 border-b border-slate-200">
-                    Preview (first {Math.min(5, preview.readyToImport.length)} of {preview.readyToImport.length} rows)
+                  <div className="bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 border-b border-slate-200 flex items-center justify-between">
+                    <span>Preview (New: {preview.readyToImport.length}, Updates: {preview.readyToUpdate.length})</span>
                   </div>
                   <div className="divide-y divide-slate-100 max-h-48 overflow-y-auto">
-                    {preview.readyToImport.slice(0, 5).map((row, idx) => (
+                    {[
+                      ...preview.readyToImport.map(r => ({ ...r, action: 'New' as const })),
+                      ...preview.readyToUpdate.map(r => ({ ...r, action: 'Update' as const })),
+                    ].slice(0, 5).map((row, idx) => (
                       <div key={idx} className="px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
                         <div className="min-w-0">
                           <span className="font-medium text-slate-800">{row.full_name}</span>
-                          <span className={`ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full border text-[11px] font-medium ${ROLE_BADGE_STYLES[row.role]}`}>
+                          <span className={`ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full border text-[11px] font-medium ${row.action === 'New' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-indigo-50 text-indigo-700 border-indigo-200'}`}>
+                            {row.action}
+                          </span>
+                          <span className={`ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full border text-[11px] font-medium ${ROLE_BADGE_STYLES[row.role]}`}>
                             {row.role}
                           </span>
                           <div className="text-slate-500 truncate mt-0.5">
@@ -1185,9 +1412,9 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
                             {row.date_of_birth ? ` · DOB ${row.date_of_birth}` : ''}
                           </div>
                         </div>
-                        {(row.address_line1 || row.city || row.state) && (
-                          <div className="text-slate-400 truncate max-w-[220px]">
-                            {[row.address_line1, row.city, row.state, row.zip_code].filter(Boolean).join(', ')}
+                        {(row.address_line1 || row.address_line2 || row.city || row.state || row.zip_code) && (
+                          <div className="text-slate-400 truncate max-w-[260px]">
+                            {[row.address_line1, row.address_line2, row.city, row.state, row.zip_code].filter(Boolean).join(', ')}
                           </div>
                         )}
                       </div>
@@ -1216,11 +1443,11 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
           <button
             type="button"
             onClick={handleConfirmImport}
-            disabled={importing || loadingScope || !hasValidTarget || !preview || preview.readyToImport.length === 0}
+            disabled={importing || loadingScope || !hasValidTarget || !preview || (preview.readyToImport.length === 0 && preview.readyToUpdate.length === 0)}
             className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium rounded-lg transition text-sm flex items-center gap-2"
           >
             {importing && <Loader2 className="w-4 h-4 animate-spin" />}
-            {importing ? 'Importing...' : `Import ${preview?.readyToImport.length ?? 0} Customer${(preview?.readyToImport.length ?? 0) === 1 ? '' : 's'}`}
+            {importing ? 'Importing...' : `Import ${preview ? preview.readyToImport.length + preview.readyToUpdate.length : 0} Customers`}
           </button>
         </div>
       </div>
@@ -1320,6 +1547,9 @@ function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
       }
       if (data && typeof data === 'object' && 'error' in data && data.error) {
         throw new Error(String(data.error));
+      }
+      if (data && typeof data === 'object' && 'errors' in data && Array.isArray(data.errors) && data.errors.length > 0 && (!('synced' in data) || data.synced === 0)) {
+        throw new Error(String(data.errors));
       }
 
       const syncedCount =

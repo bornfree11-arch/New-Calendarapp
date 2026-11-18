@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { getProfiles, saveProfile, deleteProfile } from '@/lib/store';
-import { Profile, COLOR_PALETTE, isLightColor } from '@/types';
+import { getProfiles, saveProfile, deleteProfile, getCompanies } from '@/lib/store';
+import { Profile, Company, COLOR_PALETTE, isLightColor } from '@/types';
 import { useAuth } from '@/context/AuthContext';
 import { formatPhoneNumber, isValidPhoneNumber, getInitials } from '@/lib/dateUtils';
-import { X, UserPlus, Mail, Ban, CheckCircle2, Pencil, Loader2, Trash2 } from 'lucide-react';
+import { X, UserPlus, Ban, CheckCircle2, Pencil, Loader2, Trash2, Building2 } from 'lucide-react';
 
 interface UserManagementProps {
   onClose: () => void;
@@ -14,6 +14,7 @@ interface UserManagementProps {
 export function UserManagement({ onClose, onDataChange }: UserManagementProps) {
   const { profile: currentUser, refreshProfile } = useAuth();
   const [users, setUsers] = useState<Profile[]>([]);
+  const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
@@ -25,8 +26,9 @@ export function UserManagement({ onClose, onDataChange }: UserManagementProps) {
     setLoading(true);
     setError('');
     try {
-      const u = await getProfiles();
+      const [u, c] = await Promise.all([getProfiles(), getCompanies()]);
       setUsers(u);
+      setCompanies(c);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load users.');
     } finally {
@@ -109,6 +111,9 @@ export function UserManagement({ onClose, onDataChange }: UserManagementProps) {
             <div className="space-y-2">
               {users.map(user => {
                 const isSelf = user.id === currentUser?.id;
+                const primaryCompany = user.default_company_id
+                  ? companies.find(c => c.id === user.default_company_id)
+                  : undefined;
                 return (
                   <div
                     key={user.id}
@@ -123,10 +128,16 @@ export function UserManagement({ onClose, onDataChange }: UserManagementProps) {
                       {getInitials(user.full_name)}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="font-medium text-slate-800 text-sm flex items-center gap-2">
+                      <div className="font-medium text-slate-800 text-sm flex items-center gap-2 flex-wrap">
                         {user.full_name}
                         {user.role === 'admin' && (
                           <span className="text-[10px] px-1.5 py-0.5 bg-teal-100 text-teal-700 rounded font-medium">ADMIN</span>
+                        )}
+                        {primaryCompany && (
+                          <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 bg-slate-100 text-slate-600 rounded font-medium">
+                            <Building2 className="w-3 h-3 text-slate-400" />
+                            {primaryCompany.name}
+                          </span>
                         )}
                         {isSelf && <span className="text-[10px] text-slate-400">(You)</span>}
                       </div>
@@ -169,6 +180,7 @@ export function UserManagement({ onClose, onDataChange }: UserManagementProps) {
       {showAddForm && (
         <AddUserForm
           activeColors={activeColors}
+          companies={companies}
           onClose={() => setShowAddForm(false)}
           onSaved={() => { setShowAddForm(false); loadUsers(); onDataChange?.(); }}
         />
@@ -178,6 +190,7 @@ export function UserManagement({ onClose, onDataChange }: UserManagementProps) {
         <EditUserForm
           user={editingUser}
           activeColors={activeColors}
+          companies={companies}
           currentUserId={currentUser?.id || ''}
           onClose={() => setEditingUser(null)}
           onSaved={() => { setEditingUser(null); loadUsers(); refreshProfile(); onDataChange?.(); }}
@@ -220,8 +233,9 @@ export function UserManagement({ onClose, onDataChange }: UserManagementProps) {
   );
 }
 
-function AddUserForm({ activeColors, onClose, onSaved }: {
+function AddUserForm({ activeColors, companies, onClose, onSaved }: {
   activeColors: Set<string>;
+  companies: Company[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -232,8 +246,11 @@ function AddUserForm({ activeColors, onClose, onSaved }: {
   const [phone, setPhone] = useState('');
   const [color, setColor] = useState(COLOR_PALETTE.find(c => !activeColors.has(c.value))?.value || COLOR_PALETTE[0].value);
   const [role, setRole] = useState<'admin' | 'coworker'>('coworker');
+  const [defaultCompanyId, setDefaultCompanyId] = useState<string>('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const activeCompanies = companies.filter(c => c.is_active);
 
   const adminClient = createClient(
     import.meta.env.VITE_SUPABASE_URL,
@@ -269,6 +286,7 @@ function AddUserForm({ activeColors, onClose, onSaved }: {
         calendar_color: color,
         role,
         status: 'active',
+        default_company_id: defaultCompanyId || null,
       }, adminUser?.id || null);
       onSaved();
     } catch (err) {
@@ -317,6 +335,20 @@ function AddUserForm({ activeColors, onClose, onSaved }: {
           </div>
 
           <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Primary Company</label>
+            <select
+              value={defaultCompanyId}
+              onChange={(e) => setDefaultCompanyId(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none bg-white"
+            >
+              <option value="">Unassigned</option>
+              {activeCompanies.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Role</label>
             <div className="flex gap-4">
               <label className="flex items-center gap-2 text-sm text-slate-700">
@@ -347,9 +379,10 @@ function AddUserForm({ activeColors, onClose, onSaved }: {
   );
 }
 
-function EditUserForm({ user, activeColors, currentUserId, onClose, onSaved }: {
+function EditUserForm({ user, activeColors, companies, currentUserId, onClose, onSaved }: {
   user: Profile;
   activeColors: Set<string>;
+  companies: Company[];
   currentUserId: string;
   onClose: () => void;
   onSaved: () => void;
@@ -360,8 +393,11 @@ function EditUserForm({ user, activeColors, currentUserId, onClose, onSaved }: {
   const [notes, setNotes] = useState(user.notes);
   const [color, setColor] = useState(user.calendar_color);
   const [role, setRole] = useState<'admin' | 'coworker'>(user.role);
+  const [defaultCompanyId, setDefaultCompanyId] = useState<string>(user.default_company_id || '');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const availableCompanies = companies.filter(c => c.is_active || c.id === user.default_company_id);
 
   const availableColors = new Set(activeColors);
   availableColors.delete(user.calendar_color);
@@ -382,6 +418,7 @@ function EditUserForm({ user, activeColors, currentUserId, onClose, onSaved }: {
         notes,
         calendar_color: color,
         role,
+        default_company_id: defaultCompanyId || null,
       }, adminUser?.id || null);
       onSaved();
     } catch (err) {
@@ -436,6 +473,22 @@ function EditUserForm({ user, activeColors, currentUserId, onClose, onSaved }: {
                 );
               })}
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Primary Company</label>
+            <select
+              value={defaultCompanyId}
+              onChange={(e) => setDefaultCompanyId(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none bg-white"
+            >
+              <option value="">Unassigned</option>
+              {availableCompanies.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name}{!c.is_active ? ' (Inactive)' : ''}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>

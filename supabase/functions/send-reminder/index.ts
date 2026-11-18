@@ -37,6 +37,8 @@ interface AppointmentRow {
   client_email: string;
   notes: string;
   assigned_to: string;
+  customer_id?: string | null;
+  company_id?: string | null;
   send_whatsapp: boolean | null;
   company_snapshot: {
     name: string;
@@ -139,7 +141,16 @@ function buildClientSMS(appt: AppointmentRow, profile: ProfileRow) {
   };
 }
 
-async function sendBirdSMS(toPhone: string, templateData: any, birdApiKey: string) {
+interface ClientSmsTemplateData {
+  firstName: string;
+  companyName: string;
+  companyAddress: string;
+  callbackNumber: string;
+  appointmentDate: string;
+  appointmentTime: string;
+}
+
+async function sendBirdSMS(toPhone: string, templateData: ClientSmsTemplateData, birdApiKey: string) {
   try {
     if (!birdFromNumber) {
       return { success: false, error: "BIRD_FROM_NUMBER is not configured in edge function secrets." };
@@ -195,8 +206,8 @@ async function sendBirdSMS(toPhone: string, templateData: any, birdApiKey: strin
       // Response was not JSON — proceed without message ID
     }
     return { success: true, birdMessageId };
-  } catch (err: any) {
-    return { success: false, error: err.message };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown Bird API error." };
   }
 }
 
@@ -248,6 +259,97 @@ async function sendEmail(
       error: err instanceof Error ? err.message : "Network error contacting Resend API.",
     };
   }
+}
+
+function extractMissingCol(message: string): string | null {
+  const m1 = message.match(/Could not find the '([^']+)' column/i);
+  if (m1) return m1[1];
+  const m2 = message.match(/column "([^"]+)"(?: of relation "[^"]+")? does not exist/i);
+  if (m2) return m2[1];
+  const m3 = message.match(/column [a-zA-Z0-9_]+\.([a-zA-Z0-9_]+) does not exist/i);
+  if (m3) return m3[1];
+  return null;
+}
+
+async function resolveCustomerId(appt: AppointmentRow): Promise<string | null> {
+  if (appt.customer_id) return appt.customer_id;
+  if (appt.id) {
+    try {
+      const { data } = await supabase
+        .from("appointments")
+        .select("customer_id")
+        .eq("id", appt.id)
+        .maybeSingle<{ customer_id: string | null }>();
+      if (data?.customer_id) return data.customer_id;
+    } catch {
+      // Ignore lookup failures
+    }
+  }
+  const email = (appt.client_email || "").trim().toLowerCase();
+  if (email) {
+    try {
+      const { data } = await supabase
+        .from("customers")
+        .select("id")
+        .ilike("email", email)
+        .limit(1)
+        .maybeSingle<{ id: string }>();
+      if (data?.id) return data.id;
+    } catch {
+      // Ignore
+    }
+  }
+  if (appt.client_phone && !isDummyPhoneNumber(appt.client_phone)) {
+    try {
+      const { data } = await supabase
+        .from("customers")
+        .select("id")
+        .eq("phone", appt.client_phone)
+        .limit(1)
+        .maybeSingle<{ id: string }>();
+      if (data?.id) return data.id;
+    } catch {
+      // Ignore
+    }
+  }
+  return null;
+}
+
+async function insertSentEmail(params: {
+  customer_id?: string | null;
+  appointment_id?: string | null;
+  channel: "email" | "whatsapp";
+  recipient_email?: string | null;
+  recipient_phone?: string | null;
+  recipient_name?: string | null;
+  subject: string;
+  body: string;
+}): Promise<boolean> {
+  const payload: Record<string, unknown> = {
+    customer_id: params.customer_id || null,
+    appointment_id: params.appointment_id || null,
+    source_app: "calendar",
+    channel: params.channel,
+    recipient_email: (params.recipient_email || "").trim().toLowerCase(),
+    recipient_phone: params.recipient_phone || null,
+    recipient_name: params.recipient_name || null,
+    subject: params.subject || "(No Subject)",
+    body: params.body || "",
+    status: "sent",
+    sent_at: new Date().toISOString(),
+  };
+
+  for (let i = 0; i < 8; i++) {
+    const { error } = await supabase.from("sent_emails").insert(payload);
+    if (!error) return true;
+    const missing = extractMissingCol(error.message || "");
+    if (missing && missing in payload) {
+      delete payload[missing];
+      continue;
+    }
+    return false;
+  }
+  return false;
 }
 
 // Dynamic company logo map — keyed by company name from the appointment snapshot.
@@ -629,8 +731,27 @@ Deno.serve(async (req: Request) => {
             .select("id")
             .maybeSingle();
 
+          const customerId = await resolveCustomerId(appt);
+          const logged = await insertSentEmail({
+            customer_id: customerId,
+            appointment_id: appt.id || null,
+            channel: "whatsapp",
+            recipient_email: appt.client_email || "",
+            recipient_phone: body.recipient_address,
+            recipient_name: appt.client_name,
+            subject: `WhatsApp Appointment Confirmation – ${smsMessage.companyName || appt.client_name}`,
+            body: originalMessage,
+          });
+
           return new Response(
-            JSON.stringify({ status: "sent", channel: "sms", recipient: body.recipient_address, bird_message_id: result.birdMessageId || null, attempt_id: attemptRec?.id || null }),
+            JSON.stringify({
+              status: "sent",
+              channel: "sms",
+              recipient: body.recipient_address,
+              bird_message_id: result.birdMessageId || null,
+              attempt_id: attemptRec?.id || null,
+              sent_email_logged: logged,
+            }),
             { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
           );
         } else {
@@ -656,8 +777,22 @@ Deno.serve(async (req: Request) => {
       const result = await sendEmail(body.recipient_address, subject, emailBody, emailHtml);
 
       if (result.success) {
+        let logged = false;
+        if (recipientType === "client") {
+          const customerId = await resolveCustomerId(appt);
+          logged = await insertSentEmail({
+            customer_id: customerId,
+            appointment_id: appt.id || null,
+            channel: "email",
+            recipient_email: body.recipient_address,
+            recipient_phone: appt.client_phone || null,
+            recipient_name: appt.client_name,
+            subject,
+            body: emailBody,
+          });
+        }
         return new Response(
-          JSON.stringify({ status: "sent", recipient: body.recipient_address }),
+          JSON.stringify({ status: "sent", recipient: body.recipient_address, sent_email_logged: logged }),
           { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
       } else {
@@ -743,6 +878,19 @@ Deno.serve(async (req: Request) => {
           .from("reminders")
           .update({ status: "sent", attempted_at: now, error_details: "" })
           .eq("id", reminder.id);
+        if (reminder.recipient_type === "client") {
+          const customerId = await resolveCustomerId(appt);
+          await insertSentEmail({
+            customer_id: customerId,
+            appointment_id: appt.id,
+            channel: "email",
+            recipient_email: reminder.recipient_address,
+            recipient_phone: appt.client_phone || null,
+            recipient_name: appt.client_name,
+            subject,
+            body,
+          });
+        }
         results.push({ id: reminder.id, status: "sent" });
       } else {
         // Retry logic: up to 3 retries

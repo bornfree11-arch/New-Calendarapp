@@ -24,8 +24,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .select('*')
       .eq('id', userId)
       .maybeSingle<Profile>();
-    if (error) return null;
-    return data;
+    if (error || !data) return null;
+    return {
+      ...data,
+      default_company_id: data.default_company_id ?? null,
+    };
   }
 
   useEffect(() => {

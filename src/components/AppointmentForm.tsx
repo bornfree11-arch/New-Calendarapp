@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { saveAppointment, getAppointmentsByDate, searchAppointments, searchCustomers, buildCompanySnapshot, findMatchingCustomer, saveCustomer, isCustomerVisibleForCompany } from '@/lib/store';
+import { saveAppointment, getAppointmentsByDate, searchAppointments, searchCustomers, buildCompanySnapshot, findMatchingCustomer, saveCustomer, getCustomerById, logCalendarSentEmail } from '@/lib/store';
 import {
   Appointment,
   Profile,
@@ -16,6 +16,7 @@ import {
 } from '@/types';
 import {
   formatDateISO,
+  formatDateMMDDYYYY,
   formatTime12,
   calculateEndTime,
   formatPhoneNumber,
@@ -23,7 +24,7 @@ import {
   isValidEmail,
   isDummyPhoneNumber,
 } from '@/lib/dateUtils';
-import { X, Save, AlertTriangle, Search, Loader2, MessageCircle, Users, BookUser, Globe } from 'lucide-react';
+import { X, Save, AlertTriangle, Search, Loader2, MessageCircle, Users, BookUser, Globe, CalendarClock } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface AppointmentFormProps {
@@ -32,7 +33,8 @@ interface AppointmentFormProps {
   initialStartTime: string | null;
   profiles: Profile[];
   companies: Company[];
-  typeMappings: AppointmentTypeMapping[];
+  typeMappings?: AppointmentTypeMapping[];
+  rescheduleMode?: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -52,7 +54,7 @@ export function AppointmentForm({
   initialStartTime,
   profiles,
   companies,
-  typeMappings,
+  rescheduleMode = false,
   onClose,
   onSaved,
 }: AppointmentFormProps) {
@@ -60,7 +62,31 @@ export function AppointmentForm({
 
   const activeProfiles = profiles.filter(p => p.status === 'active');
 
-  const [date, setDate] = useState(formatDateISO(appointment?.appointment_date ? new Date(appointment.appointment_date + 'T00:00') : initialDate));
+  const fallbackPrimaryCompanyId = useMemo(() => {
+    return companies.find(c => c.is_active)?.id || companies[0]?.id || null;
+  }, [companies]);
+
+  const getEmployeeDefaultCompanyId = useCallback((userId: string): string | null => {
+    const emp = profiles.find(p => p.id === userId) || (currentUser?.id === userId ? currentUser : undefined);
+    if (emp?.default_company_id) {
+      return emp.default_company_id;
+    }
+    return fallbackPrimaryCompanyId;
+  }, [profiles, currentUser, fallbackPrimaryCompanyId]);
+
+  const initialAssignedTo = appointment?.assigned_to || currentUser?.id || '';
+  const todayISO = formatDateISO(new Date());
+  const defaultDateISO = (() => {
+    if (appointment?.appointment_date) {
+      if (rescheduleMode && appointment.appointment_date < todayISO) {
+        return todayISO;
+      }
+      return formatDateISO(new Date(appointment.appointment_date + 'T00:00'));
+    }
+    return formatDateISO(initialDate);
+  })();
+
+  const [date, setDate] = useState(defaultDateISO);
   const [startTime, setStartTime] = useState(appointment?.start_time || initialStartTime || '09:00:00');
   const [duration, setDuration] = useState<DurationMinutes>(appointment?.duration_minutes || 30);
   const [apptType, setApptType] = useState<AppointmentType>(appointment?.appointment_type || 'Tax/Accounting');
@@ -68,9 +94,12 @@ export function AppointmentForm({
   const [clientPhone, setClientPhone] = useState(appointment?.client_phone || '');
   const [clientEmail, setClientEmail] = useState(appointment?.client_email || '');
   const [notes, setNotes] = useState(appointment?.notes || '');
-  const [assignedTo, setAssignedTo] = useState(appointment?.assigned_to || currentUser?.id || '');
-  const [status, setStatus] = useState<AppointmentStatus>(appointment?.status || 'Scheduled');
-  const [companyId, setCompanyId] = useState<string | null>(appointment?.company_id || null);
+  const [assignedTo, setAssignedTo] = useState(initialAssignedTo);
+  const [status, setStatus] = useState<AppointmentStatus>(rescheduleMode ? 'Rescheduled' : (appointment?.status || 'Scheduled'));
+  const [companyId, setCompanyId] = useState<string | null>(() =>
+    appointment ? (appointment.company_id || null) : getEmployeeDefaultCompanyId(initialAssignedTo)
+  );
+  const [companyManuallyChanged, setCompanyManuallyChanged] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [overlapWarnings, setOverlapWarnings] = useState<OverlapWarning[]>([]);
@@ -91,6 +120,7 @@ export function AppointmentForm({
   const [saveToBook, setSaveToBook] = useState(true);
   const [saveAsGlobal, setSaveAsGlobal] = useState(false);
   const [linkedCustomer, setLinkedCustomer] = useState<Customer | null>(null);
+  const [companyConflictCustomer, setCompanyConflictCustomer] = useState<Customer | null>(null);
   const [nameSuggestions, setNameSuggestions] = useState<Customer[]>([]);
   const [showNameSuggestions, setShowNameSuggestions] = useState(false);
 
@@ -108,16 +138,26 @@ export function AppointmentForm({
 
   const endTime = useMemo(() => calculateEndTime(startTime, duration), [startTime, duration]);
 
-  const defaultCompanyId = useMemo(() => {
-    const mapping = typeMappings.find(m => m.appointment_type === apptType);
-    return mapping?.company_id || null;
-  }, [apptType, typeMappings]);
+  useEffect(() => {
+    if (!appointment && !companyManuallyChanged) {
+      setCompanyId(getEmployeeDefaultCompanyId(assignedTo));
+    }
+  }, [appointment, assignedTo, companyManuallyChanged, getEmployeeDefaultCompanyId]);
 
   useEffect(() => {
-    if (!appointment) {
-      setCompanyId(defaultCompanyId);
-    }
-  }, [defaultCompanyId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!appointment?.customer_id) return;
+    let active = true;
+    getCustomerById(appointment.customer_id)
+      .then((cust) => {
+        if (active && cust) {
+          setLinkedCustomer(cust);
+        }
+      })
+      .catch(() => {
+        // Best-effort fetch
+      });
+    return () => { active = false; };
+  }, [appointment?.customer_id]);
 
   const assignedCompany = companies.find(c => c.id === companyId);
 
@@ -190,13 +230,6 @@ export function AppointmentForm({
     return () => clearTimeout(timer);
   }, [clientName, companyId, selectedCustomerId, showNameSuggestions]);
 
-  useEffect(() => {
-    if (linkedCustomer && !isCustomerVisibleForCompany(linkedCustomer, companyId)) {
-      setSelectedCustomerId(null);
-      setLinkedCustomer(null);
-    }
-  }, [companyId, linkedCustomer]);
-
   function handleClientSearch(query: string) {
     setClientSearchQuery(query);
     setShowClientSearch(true);
@@ -214,6 +247,7 @@ export function AppointmentForm({
   function selectCustomerFromDirectory(customer: Customer) {
     setSelectedCustomerId(customer.id);
     setLinkedCustomer(customer);
+    setCompanyConflictCustomer(null);
     setClientName(customer.full_name);
     setClientPhone(customer.phone || '');
     setClientEmail(customer.email || '');
@@ -228,6 +262,7 @@ export function AppointmentForm({
   function clearCustomerLink() {
     setSelectedCustomerId(null);
     setLinkedCustomer(null);
+    setCompanyConflictCustomer(null);
     setClientName('');
     setClientPhone('');
     setClientEmail('');
@@ -287,8 +322,7 @@ export function AppointmentForm({
     return overlaps;
   }
 
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
+  async function executeSave(conflictResolution?: 'switch' | 'global' | 'keep') {
     setError('');
     setSaving(true);
 
@@ -310,7 +344,7 @@ export function AppointmentForm({
         return;
       }
 
-      if (!acknowledgedOverlaps) {
+      if (!acknowledgedOverlaps && !conflictResolution) {
         setCheckingOverlaps(true);
         const overlaps = await checkOverlaps(appointment?.id);
         setCheckingOverlaps(false);
@@ -332,9 +366,30 @@ export function AppointmentForm({
         }
       }
 
-      // If creating or editing an appointment with no customer linked, link or save to customer book
+      // Resolve linked customer record if linked
       let resolvedCustomerId = selectedCustomerId;
+      let activeLinkedCustomer = linkedCustomer;
+      if (resolvedCustomerId && !activeLinkedCustomer) {
+        activeLinkedCustomer = await getCustomerById(resolvedCustomerId);
+        if (activeLinkedCustomer) {
+          setLinkedCustomer(activeLinkedCustomer);
+        }
+      }
 
+      // Guard against silent cross-company customer reassignment
+      const hasCrossCompanyConflict = Boolean(
+        activeLinkedCustomer &&
+        !activeLinkedCustomer.is_global &&
+        activeLinkedCustomer.company_id !== null &&
+        activeLinkedCustomer.company_id !== companyId
+      );
+
+      if (hasCrossCompanyConflict && !conflictResolution) {
+        setCompanyConflictCustomer(activeLinkedCustomer);
+        return;
+      }
+
+      // If creating or editing an appointment with no customer linked, link or save to customer book
       if (!resolvedCustomerId && saveToBook && clientName.trim()) {
         const phoneDigits = (clientPhone || '').replace(/\D/g, '');
         const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
@@ -362,19 +417,38 @@ export function AppointmentForm({
         }
       }
 
-      // Update linked customer record if user edited phone/email and checkbox is on
-      if (resolvedCustomerId && linkedCustomer && updateCustomerRecord) {
-        const phoneChanged = clientPhone !== (linkedCustomer.phone || '');
-        const emailChanged = clientEmail !== (linkedCustomer.email || '');
-        if (phoneChanged || emailChanged) {
-          const phoneDigits = (clientPhone || '').replace(/\D/g, '');
-          const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
-          await saveCustomer({
-            id: resolvedCustomerId,
-            phone: hasRealPhone ? clientPhone : (linkedCustomer.phone || ''),
-            email: clientEmail || (linkedCustomer.email || ''),
-            send_whatsapp: hasRealPhone ? sendWhatsapp : linkedCustomer.send_whatsapp,
-          }, currentUser?.id || null);
+      // Update linked customer record (contact info and/or cross-company resolution)
+      if (resolvedCustomerId && activeLinkedCustomer) {
+        const customerUpdates: Partial<Customer> & { id: string } = { id: resolvedCustomerId };
+        let hasCustomerUpdates = false;
+
+        if (updateCustomerRecord) {
+          const phoneChanged = clientPhone !== (activeLinkedCustomer.phone || '');
+          const emailChanged = clientEmail !== (activeLinkedCustomer.email || '');
+          if (phoneChanged || emailChanged) {
+            const phoneDigits = (clientPhone || '').replace(/\D/g, '');
+            const hasRealPhone = phoneDigits.length === 10 && !isDummyPhoneNumber(phoneDigits);
+            customerUpdates.phone = hasRealPhone ? clientPhone : (activeLinkedCustomer.phone || '');
+            customerUpdates.email = clientEmail || (activeLinkedCustomer.email || '');
+            customerUpdates.send_whatsapp = hasRealPhone ? sendWhatsapp : activeLinkedCustomer.send_whatsapp;
+            hasCustomerUpdates = true;
+          }
+        }
+
+        if (conflictResolution === 'switch') {
+          customerUpdates.company_id = companyId;
+          customerUpdates.is_global = false;
+          hasCustomerUpdates = true;
+        } else if (conflictResolution === 'global') {
+          customerUpdates.company_id = null;
+          customerUpdates.is_global = true;
+          hasCustomerUpdates = true;
+        }
+        // When conflictResolution === 'keep', do NOT modify company_id or is_global.
+
+        if (hasCustomerUpdates) {
+          const updatedCustomer = await saveCustomer(customerUpdates, currentUser?.id || null);
+          setLinkedCustomer(updatedCustomer);
         }
       }
 
@@ -399,13 +473,16 @@ export function AppointmentForm({
         created_by: appointment?.created_by || currentUser?.id || null,
       }, currentUser?.id || null);
 
+      setCompanyConflictCustomer(null);
+
       if (!appointment) {
         const assignedProfile = profiles.find(p => p.id === assignedTo);
+        const compLabel = assignedComp?.name || savedAppt.company_snapshot?.name || 'Our Office';
 
         // Send confirmation email if client email is on file
-       if (clientEmail && date !== formatDateISO(new Date())) {
+        if (clientEmail && date !== formatDateISO(new Date())) {
           try {
-            await supabase.functions.invoke('send-reminder', {
+            const { data: emailRes } = await supabase.functions.invoke('send-reminder', {
               method: 'POST',
               body: JSON.stringify({
                 manual: true,
@@ -422,6 +499,8 @@ export function AppointmentForm({
                   client_email: savedAppt.client_email,
                   notes: savedAppt.notes,
                   assigned_to: savedAppt.assigned_to,
+                  customer_id: savedAppt.customer_id ?? null,
+                  company_id: savedAppt.company_id ?? null,
                   company_snapshot: savedAppt.company_snapshot,
                 },
                 profile: assignedProfile
@@ -429,6 +508,19 @@ export function AppointmentForm({
                   : null,
               }),
             });
+            if (emailRes?.status === 'sent' && !emailRes?.sent_email_logged) {
+              await logCalendarSentEmail({
+                customer_id: savedAppt.customer_id ?? null,
+                appointment_id: savedAppt.id,
+                channel: 'email',
+                recipient_email: clientEmail,
+                recipient_phone: clientPhone || null,
+                recipient_name: savedAppt.client_name,
+                subject: `Appointment Confirmation – ${compLabel}`,
+                body: `Appointment confirmation email sent to ${savedAppt.client_name} (${clientEmail}) for ${formatDateMMDDYYYY(savedAppt.appointment_date)} at ${formatTime12(savedAppt.start_time)}.`,
+                status: 'sent',
+              });
+            }
           } catch {
             // Email failure must not block the save — fail silently
           }
@@ -437,7 +529,7 @@ export function AppointmentForm({
         // Automatically send SMS confirmation to client via Bird API
         if (sendWhatsapp && clientPhone && !isDummyPhoneNumber(clientPhone)) {
           try {
-            await supabase.functions.invoke('send-reminder', {
+            const { data: smsRes } = await supabase.functions.invoke('send-reminder', {
               method: 'POST',
               body: JSON.stringify({
                 manual: true,
@@ -455,6 +547,8 @@ export function AppointmentForm({
                   client_email: savedAppt.client_email,
                   notes: savedAppt.notes,
                   assigned_to: savedAppt.assigned_to,
+                  customer_id: savedAppt.customer_id ?? null,
+                  company_id: savedAppt.company_id ?? null,
                   company_snapshot: savedAppt.company_snapshot,
                 },
                 profile: assignedProfile
@@ -462,6 +556,19 @@ export function AppointmentForm({
                   : null,
               }),
             });
+            if (smsRes?.status === 'sent' && !smsRes?.sent_email_logged) {
+              await logCalendarSentEmail({
+                customer_id: savedAppt.customer_id ?? null,
+                appointment_id: savedAppt.id,
+                channel: 'whatsapp',
+                recipient_email: clientEmail || '',
+                recipient_phone: clientPhone,
+                recipient_name: savedAppt.client_name,
+                subject: `WhatsApp Appointment Confirmation – ${compLabel}`,
+                body: `WhatsApp confirmation sent to ${savedAppt.client_name} (${clientPhone}) for ${formatDateMMDDYYYY(savedAppt.appointment_date)} at ${formatTime12(savedAppt.start_time)}.`,
+                status: 'sent',
+              });
+            }
           } catch {
             // SMS failure must not block the save — fail silently
           }
@@ -469,7 +576,6 @@ export function AppointmentForm({
       }
 
       onSaved();
-       
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save appointment.');
     } finally {
@@ -478,12 +584,18 @@ export function AppointmentForm({
     }
   }
 
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    await executeSave();
+  }
+
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full my-8 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 sticky top-0 bg-white rounded-t-2xl z-10">
-          <h2 className="text-lg font-semibold text-slate-800">
-            {appointment ? 'Edit Appointment' : 'New Appointment'}
+          <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+            {rescheduleMode && <CalendarClock className="w-5 h-5 text-purple-600" />}
+            {rescheduleMode ? 'Reschedule Appointment' : appointment ? 'Edit Appointment' : 'New Appointment'}
           </h2>
           <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg transition">
             <X className="w-5 h-5 text-slate-500" />
@@ -498,6 +610,11 @@ export function AppointmentForm({
   }}
   className="px-6 py-4 space-y-4"
 >
+          {rescheduleMode && appointment && (
+            <div className="bg-purple-50 border border-purple-200 text-purple-900 rounded-xl px-4 py-3 text-xs leading-relaxed">
+              Pick a new date and time for <strong>{appointment.client_name}</strong>. Customer, company, category, and notes are pre-filled, and the status will update to <strong>Rescheduled</strong>.
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Date *</label>
@@ -546,12 +663,7 @@ export function AppointmentForm({
             <label className="block text-sm font-medium text-slate-700 mb-1">Appointment Type *</label>
             <select
               value={apptType}
-              onChange={(e) => {
-                const newType = e.target.value as AppointmentType;
-                setApptType(newType);
-                const mapping = typeMappings.find(m => m.appointment_type === newType);
-                setCompanyId(mapping?.company_id || null);
-              }}
+              onChange={(e) => setApptType(e.target.value as AppointmentType)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none text-sm"
             >
               {APPOINTMENT_TYPES.map(t => (
@@ -613,7 +725,7 @@ export function AppointmentForm({
                       >
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-slate-700">{c.full_name}</span>
-                          {c.is_global && (
+                          {(c.is_global || c.company_id === null) && (
                             <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium">
                               <Globe className="w-2.5 h-2.5" /> Global
                             </span>
@@ -643,7 +755,18 @@ export function AppointmentForm({
               return (
                 <>
                   <div className="flex items-center justify-between bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
-                    <span className="text-xs text-teal-700 font-medium">Linked to customer directory</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-teal-700 font-medium">Linked to customer directory</span>
+                      {(linkedCustomer.is_global || linkedCustomer.company_id === null) ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium">
+                          <Globe className="w-2.5 h-2.5" /> Global
+                        </span>
+                      ) : linkedCustomer.company_id !== companyId ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded-full font-medium">
+                          {companies.find(c => c.id === linkedCustomer.company_id)?.name || 'Different Company'}
+                        </span>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       onClick={clearCustomerLink}
@@ -767,7 +890,7 @@ export function AppointmentForm({
                       >
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-slate-700">{c.full_name}</span>
-                          {c.is_global && (
+                          {(c.is_global || c.company_id === null) && (
                             <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium">
                               <Globe className="w-2.5 h-2.5" /> Global
                             </span>
@@ -875,11 +998,15 @@ export function AppointmentForm({
             <label className="block text-sm font-medium text-slate-700 mb-1">Associated Company</label>
             <select
               value={companyId || ''}
-              onChange={(e) => setCompanyId(e.target.value || null)}
+              onChange={(e) => {
+                setCompanyId(e.target.value || null);
+                setCompanyManuallyChanged(true);
+                setCompanyConflictCustomer(null);
+              }}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none text-sm"
             >
               <option value="">No company assigned</option>
-              {companies.filter(c => c.is_active).map(c => (
+              {companies.filter(c => c.is_active || c.id === companyId).map(c => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
@@ -892,7 +1019,7 @@ export function AppointmentForm({
             )}
             {!assignedCompany && (
               <div className="text-xs text-amber-600 mt-1">
-                No company mapped for this appointment type. Reminders will not be sent until configured.
+                No company assigned to this appointment. Reminders will not be sent until a company is selected.
               </div>
             )}
           </div>
@@ -938,6 +1065,60 @@ export function AppointmentForm({
                   className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
                 >
                   Cancel & Adjust
+                </button>
+              </div>
+            </div>
+          )}
+
+          {companyConflictCustomer && (
+            <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 space-y-3">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="text-sm text-amber-900">
+                  <div className="font-semibold text-amber-900">Cross-Company Customer Notice</div>
+                  <p className="mt-1 text-xs leading-relaxed text-amber-800">
+                    This customer currently belongs to{' '}
+                    <strong>
+                      {companies.find(c => c.id === companyConflictCustomer.company_id)?.name || 'another company'}
+                    </strong>
+                    . How would you like to proceed?
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                {companyId && assignedCompany && (
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => executeSave('switch')}
+                    className="w-full text-left px-3.5 py-2 text-xs font-medium bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white rounded-lg transition"
+                  >
+                    Switch Customer to {assignedCompany.name}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => executeSave('global')}
+                  className="w-full text-left px-3.5 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition"
+                >
+                  Mark Customer as Global (Shared)
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => executeSave('keep')}
+                  className="w-full text-left px-3.5 py-2 text-xs font-medium bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-700 border border-slate-300 rounded-lg transition"
+                >
+                  Keep Original Company (Appointment Only)
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setCompanyConflictCustomer(null)}
+                  className="self-end px-3 py-1 text-xs font-medium text-slate-600 hover:text-slate-800 transition"
+                >
+                  Cancel
                 </button>
               </div>
             </div>

@@ -123,6 +123,7 @@ export function SearchModal({ profiles, onClose, onResultClick }: SearchModalPro
                         {' · '}<span className={
                           appt.status === 'Cancelled' ? 'text-red-500' :
                           appt.status === 'Completed' ? 'text-green-600' :
+                          appt.status === 'Rescheduled' ? 'text-purple-600' :
                           appt.status === 'No-show' ? 'text-amber-600' : 'text-slate-500'
                         }>{appt.status}</span>
                       </div>

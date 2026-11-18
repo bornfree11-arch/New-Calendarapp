@@ -69,6 +69,37 @@ export function formatDateMedium(date: Date): string {
   return `${MONTH_NAMES_SHORT[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 }
 
+export function formatDateMMDDYYYY(value: string | Date): string {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return '';
+    const m = (value.getMonth() + 1).toString().padStart(2, '0');
+    const d = value.getDate().toString().padStart(2, '0');
+    return `${m}/${d}/${value.getFullYear()}`;
+  }
+  const trimmed = (value || '').trim();
+  if (!trimmed) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [y, m, d] = trimmed.split('-');
+    return `${m}/${d}/${y}`;
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return trimmed;
+  const m = (parsed.getMonth() + 1).toString().padStart(2, '0');
+  const d = parsed.getDate().toString().padStart(2, '0');
+  return `${m}/${d}/${parsed.getFullYear()}`;
+}
+
+export function formatDateTimeMMDDYYYY(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return formatDateMMDDYYYY(value);
+  const datePart = formatDateMMDDYYYY(parsed);
+  const timePart = parsed.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  return `${datePart} · ${timePart}`;
+}
+
 export function formatPhoneNumber(value: string): string {
   const digits = value.replace(/\D/g, '').slice(0, 10);
   if (digits.length === 0) return '';

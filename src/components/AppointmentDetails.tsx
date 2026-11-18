@@ -1,26 +1,28 @@
 import { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { Appointment, Profile, Company, AppointmentStatus, Customer } from '@/types';
-import { formatTime12, formatDateLong, getInitials, isDummyPhoneNumber } from '@/lib/dateUtils';
+import { Appointment, Profile, Company, Customer } from '@/types';
+import { formatTime12, formatDateLong, formatDateMMDDYYYY, getInitials, isDummyPhoneNumber } from '@/lib/dateUtils';
 import { supabase } from '@/lib/supabase';
-import { findMatchingCustomer, saveCustomer, searchCustomers } from '@/lib/store';
-import { X, Edit2, Trash2, MapPin, Phone, Mail, Clock, Building, Send, MessageSquare, CheckCircle2, AlertCircle, BookUser, Link2, Loader2, Search, Globe } from 'lucide-react';
+import { findMatchingCustomer, saveCustomer, searchCustomers, logCalendarSentEmail, linkAppointmentCustomer, normalizeAppointmentStatus, formatAppointmentStatusLabel } from '@/lib/store';
+import { X, Edit2, Trash2, MapPin, Phone, Mail, Clock, Building, Send, MessageSquare, CheckCircle2, AlertCircle, BookUser, Link2, Loader2, Search, Globe, CalendarClock } from 'lucide-react';
 
 interface AppointmentDetailsProps {
   appointment: Appointment;
   profile?: Profile;
   company?: Company | null;
   onEdit: () => void;
+  onReschedule?: () => void;
   onDelete: () => void;
   onClose: () => void;
   onCustomerLinked?: (customerId: string) => void;
 }
 
-const STATUS_BADGE: Record<AppointmentStatus, string> = {
-  'Scheduled': 'bg-blue-100 text-blue-700',
-  'Completed': 'bg-green-100 text-green-700',
-  'Cancelled': 'bg-red-100 text-red-700',
-  'No-show': 'bg-amber-100 text-amber-700',
+const STATUS_BADGE: Record<string, string> = {
+  scheduled: 'bg-blue-100 text-blue-700',
+  completed: 'bg-green-100 text-green-700',
+  cancelled: 'bg-red-100 text-red-700',
+  'no-show': 'bg-amber-100 text-amber-700',
+  rescheduled: 'bg-purple-100 text-purple-700',
 };
 
 export function AppointmentDetails({
@@ -28,12 +30,12 @@ export function AppointmentDetails({
   profile,
   company,
   onEdit,
+  onReschedule,
   onDelete,
   onClose,
   onCustomerLinked,
 }: AppointmentDetailsProps) {
   const { profile: currentUser } = useAuth();
-  const isAdmin = currentUser?.role === 'admin';
   const [reminderStatus, setReminderStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [reminderError, setReminderError] = useState('');
   const [smsStatus, setSmsStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
@@ -72,6 +74,8 @@ export function AppointmentDetails({
             client_email: appointment.client_email,
             notes: appointment.notes,
             assigned_to: appointment.assigned_to,
+            customer_id: linkedCustomerId || appointment.customer_id || null,
+            company_id: appointment.company_id || null,
             company_snapshot: appointment.company_snapshot,
           },
           profile: profile
@@ -81,6 +85,20 @@ export function AppointmentDetails({
       });
       if (error) throw error;
       if (data?.status === 'sent') {
+        if (!data?.sent_email_logged) {
+          const compLabel = company?.name || appointment.company_snapshot?.name || 'Our Office';
+          await logCalendarSentEmail({
+            customer_id: linkedCustomerId || appointment.customer_id || null,
+            appointment_id: appointment.id,
+            channel: 'email',
+            recipient_email: appointment.client_email,
+            recipient_phone: appointment.client_phone || null,
+            recipient_name: appointment.client_name,
+            subject: `Appointment Confirmation – ${compLabel}`,
+            body: `Appointment reminder email sent to ${appointment.client_name} (${appointment.client_email}) for ${formatDateMMDDYYYY(appointment.appointment_date)} at ${formatTime12(appointment.start_time)}.`,
+            status: 'sent',
+          });
+        }
         setReminderStatus('sent');
       } else {
         setReminderStatus('error');
@@ -119,6 +137,8 @@ export function AppointmentDetails({
             client_email: appointment.client_email,
             notes: appointment.notes,
             assigned_to: appointment.assigned_to,
+            customer_id: linkedCustomerId || appointment.customer_id || null,
+            company_id: appointment.company_id || null,
             company_snapshot: appointment.company_snapshot,
           },
           profile: profile
@@ -128,6 +148,20 @@ export function AppointmentDetails({
       });
       if (error) throw error;
       if (data?.status === 'sent') {
+        if (!data?.sent_email_logged) {
+          const compLabel = company?.name || appointment.company_snapshot?.name || 'Our Office';
+          await logCalendarSentEmail({
+            customer_id: linkedCustomerId || appointment.customer_id || null,
+            appointment_id: appointment.id,
+            channel: 'whatsapp',
+            recipient_email: appointment.client_email || '',
+            recipient_phone: appointment.client_phone,
+            recipient_name: appointment.client_name,
+            subject: `WhatsApp Appointment Confirmation – ${compLabel}`,
+            body: `WhatsApp confirmation sent to ${appointment.client_name} (${appointment.client_phone}) for ${formatDateMMDDYYYY(appointment.appointment_date)} at ${formatTime12(appointment.start_time)}.`,
+            status: 'sent',
+          });
+        }
         setSmsStatus('sent');
       } else if (data?.status === 'skipped') {
         setSmsStatus('error');
@@ -177,11 +211,7 @@ export function AppointmentDetails({
         }, currentUser?.id || null);
         customerId = newCust.id;
       }
-      const { error: updErr } = await supabase
-        .from('appointments')
-        .update({ customer_id: customerId, updated_at: new Date().toISOString() })
-        .eq('id', appointment.id);
-      if (updErr) throw updErr;
+      await linkAppointmentCustomer(appointment.id, customerId, currentUser?.id || null);
       setLinkedCustomerId(customerId);
       onCustomerLinked?.(customerId);
     } catch (err) {
@@ -195,11 +225,7 @@ export function AppointmentDetails({
     setSavingToBook(true);
     setLinkError('');
     try {
-      const { error: updErr } = await supabase
-        .from('appointments')
-        .update({ customer_id: customer.id, updated_at: new Date().toISOString() })
-        .eq('id', appointment.id);
-      if (updErr) throw updErr;
+      await linkAppointmentCustomer(appointment.id, customer.id, currentUser?.id || null);
       setLinkedCustomerId(customer.id);
       setShowLinkSearch(false);
       onCustomerLinked?.(customer.id);
@@ -250,8 +276,8 @@ export function AppointmentDetails({
 
         <div className="px-6 py-4 space-y-4">
           {/* Status badge */}
-          <div className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${STATUS_BADGE[appointment.status]}`}>
-            {appointment.status}
+          <div className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${STATUS_BADGE[normalizeAppointmentStatus(appointment.status)] || 'bg-slate-100 text-slate-700'}`}>
+            {formatAppointmentStatusLabel(appointment.status)}
           </div>
 
           {/* Date and time */}
@@ -391,7 +417,7 @@ export function AppointmentDetails({
                         >
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-slate-700">{c.full_name}</span>
-                            {c.is_global && (
+                            {(c.is_global || c.company_id === null) && (
                               <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium">
                                 <Globe className="w-2.5 h-2.5" /> Global
                               </span>
@@ -437,11 +463,21 @@ export function AppointmentDetails({
         )}
 
         {/* Actions */}
-        <div className="flex gap-3 px-6 py-4 border-t border-slate-200">
+        <div className="flex flex-wrap gap-2.5 px-6 py-4 border-t border-slate-200">
+          {onReschedule && (
+            <button
+              onClick={onReschedule}
+              className="flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-medium py-2.5 px-4 rounded-lg transition text-sm shadow-sm"
+              title="Reschedule this appointment to a new date and time"
+            >
+              <CalendarClock className="w-4 h-4" />
+              Reschedule
+            </button>
+          )}
           <button
             onClick={handleSendReminder}
             disabled={reminderStatus === 'sending'}
-            className="flex items-center justify-center gap-2 bg-teal-50 hover:bg-teal-100 text-teal-700 font-medium py-2.5 px-4 rounded-lg transition text-sm disabled:opacity-50"
+            className="flex items-center justify-center gap-2 bg-teal-50 hover:bg-teal-100 text-teal-700 font-medium py-2.5 px-3.5 rounded-lg transition text-sm disabled:opacity-50"
             title={appointment.client_email ? `Send reminder email to ${appointment.client_email}` : 'No client email on file'}
           >
             <Send className="w-4 h-4" />
@@ -450,7 +486,7 @@ export function AppointmentDetails({
           <button
             onClick={handleSendSMS}
             disabled={smsStatus === 'sending' || appointment.send_whatsapp === false || !appointment.client_phone || isDummyPhoneNumber(appointment.client_phone)}
-            className="flex items-center justify-center gap-2 bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium py-2.5 px-4 rounded-lg transition text-sm disabled:opacity-50"
+            className="flex items-center justify-center gap-2 bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium py-2.5 px-3.5 rounded-lg transition text-sm disabled:opacity-50"
             title={appointment.send_whatsapp === false ? 'WhatsApp is disabled for this customer' : !appointment.client_phone ? 'No client phone on file' : isDummyPhoneNumber(appointment.client_phone) ? 'Phone number is not a valid mobile number' : `Send text to ${appointment.client_phone}`}
           >
             <MessageSquare className="w-4 h-4" />
@@ -458,21 +494,21 @@ export function AppointmentDetails({
           </button>
           <button
             onClick={onEdit}
-            className="flex-1 flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-2.5 rounded-lg transition text-sm"
+            className="flex-1 flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-2.5 px-3.5 rounded-lg transition text-sm"
           >
             <Edit2 className="w-4 h-4" />
             Edit
           </button>
           <button
             onClick={onDelete}
-            className="flex items-center justify-center gap-2 bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2.5 px-4 rounded-lg transition text-sm"
+            className="flex items-center justify-center gap-2 bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2.5 px-3.5 rounded-lg transition text-sm"
           >
             <Trash2 className="w-4 h-4" />
             Delete
           </button>
           <button
             onClick={onClose}
-            className="px-6 py-2.5 font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg transition text-sm"
+            className="px-4 py-2.5 font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg transition text-sm"
           >
             Close
           </button>

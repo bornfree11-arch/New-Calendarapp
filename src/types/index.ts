@@ -10,6 +10,7 @@ export interface Profile {
   calendar_color: string;
   role: UserRole;
   status: UserStatus;
+  default_company_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -37,7 +38,7 @@ export interface AppointmentTypeMapping {
 }
 
 export type AppointmentType = 'Tax/Accounting' | 'ACA' | 'Medicare' | 'Life' | 'Other';
-export type AppointmentStatus = 'Scheduled' | 'Completed' | 'Cancelled' | 'No-show';
+export type AppointmentStatus = 'Scheduled' | 'Completed' | 'Cancelled' | 'No-show' | 'Rescheduled';
 export type DurationMinutes = 30 | 60 | 90 | 120;
 
 export interface CompanySnapshot {
@@ -104,6 +105,28 @@ export interface Customer {
   updated_at: string;
 }
 
+export interface SentEmailRecord {
+  id: string;
+  customer_id?: string | null;
+  source_app?: string | null;
+  channel?: string | null;
+  recipient_email?: string | null;
+  recipient_phone?: string | null;
+  recipient_name?: string | null;
+  subject?: string | null;
+  body?: string | null;
+  message?: string | null;
+  status?: string | null;
+  error_message?: string | null;
+  payroll_run_id?: string | null;
+  company_id?: string | null;
+  appointment_id?: string | null;
+  email_type?: string | null;
+  sent_at?: string | null;
+  created_at?: string | null;
+  [key: string]: unknown;
+}
+
 export interface AppointmentWithDetails extends Appointment {
   assigned_profile?: Profile;
   company?: Company | null;
@@ -127,6 +150,7 @@ export const APPOINTMENT_STATUSES: AppointmentStatus[] = [
   'Completed',
   'Cancelled',
   'No-show',
+  'Rescheduled',
 ];
 
 export const DURATIONS: DurationMinutes[] = [30, 60, 90, 120];

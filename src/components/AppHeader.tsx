@@ -19,10 +19,14 @@ import {
   Timer,
   Contact,
   Pause,
+  List,
+  Calendar,
 } from 'lucide-react';
 import { FocusSession, FocusSessionTask } from '@/types';
 
 interface AppHeaderProps {
+  activeView?: 'monthly' | 'daily' | 'allAppointments' | 'tasks';
+  onSelectView?: (view: 'monthly' | 'daily' | 'allAppointments') => void;
   onOpenSearch: () => void;
   onOpenUserManagement: () => void;
   onOpenCompanyManagement: () => void;
@@ -41,6 +45,8 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({
+  activeView,
+  onSelectView,
   onOpenSearch,
   onOpenUserManagement,
   onOpenCompanyManagement,
@@ -71,9 +77,52 @@ export function AppHeader({
           <div className="w-9 h-9 bg-teal-600 rounded-lg flex items-center justify-center shrink-0">
             <CalendarDays className="w-5 h-5 text-white" />
           </div>
-          <h1 className="text-base font-semibold text-slate-800 truncate hidden sm:block">
+          <h1 className="text-base font-semibold text-slate-800 truncate hidden lg:block">
             Shared Calendar
           </h1>
+          {onSelectView && (
+            <div className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => onSelectView('monthly')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition ${
+                  activeView === 'monthly'
+                    ? 'bg-white text-teal-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-800'
+                }`}
+                title="Monthly Calendar View"
+              >
+                <CalendarDays className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Monthly</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onSelectView('daily')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition ${
+                  activeView === 'daily'
+                    ? 'bg-white text-teal-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-800'
+                }`}
+                title="Daily Schedule View"
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Daily</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onSelectView('allAppointments')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition ${
+                  activeView === 'allAppointments'
+                    ? 'bg-white text-teal-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-800'
+                }`}
+                title="All Appointments List View"
+              >
+                <List className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">All Appointments</span>
+              </button>
+            </div>
+          )}
           {focusSession && focusCurrentTask && focusSession.status === 'active' && onOpenFocus && (
             <button
               onClick={onOpenFocus}

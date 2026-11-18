@@ -69,7 +69,7 @@ export function useAppointmentAlerts({ profile, authLoading, dataVersion }: UseA
       const newlyTriggered: UpcomingAppointmentAlert[] = [];
 
       for (const appt of todaysAppointments) {
-        if (appt.status !== 'Scheduled') continue;
+        if (appt.status !== 'Scheduled' && appt.status !== 'Rescheduled') continue;
 
         const startMs = parseAppointmentStartMs(appt);
         const diffMs = startMs - nowMs;
@@ -107,7 +107,7 @@ export function useAppointmentAlerts({ profile, authLoading, dataVersion }: UseA
         const retained = prev
           .filter((item) => {
             const latest = apptById.get(item.appointment.id);
-            if (!latest || latest.status !== 'Scheduled') return false;
+            if (!latest || (latest.status !== 'Scheduled' && latest.status !== 'Rescheduled')) return false;
             const startMs = parseAppointmentStartMs(latest);
             return nowMs - startMs <= 5 * 60_000;
           })

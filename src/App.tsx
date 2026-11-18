@@ -13,6 +13,7 @@ import { SetupScreen } from '@/screens/SetupScreen';
 import { LoginScreen } from '@/screens/LoginScreen';
 import { MonthlyView } from '@/screens/MonthlyView';
 import { DailyView } from '@/screens/DailyView';
+import { AllAppointmentsView } from '@/screens/AllAppointmentsView';
 import { AppointmentForm } from '@/components/AppointmentForm';
 import { AppointmentDetails } from '@/components/AppointmentDetails';
 import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog';
@@ -36,7 +37,7 @@ import { getNotificationPermission, requestNotificationPermission } from '@/lib/
 import { addDays, parseDateISO, formatDateISO, formatTime12, isEmbedded } from '@/lib/dateUtils';
 import { Loader2, Clock, VolumeX, BellRing, X } from 'lucide-react';
 
-type View = 'monthly' | 'daily' | 'tasks';
+type View = 'monthly' | 'daily' | 'allAppointments' | 'tasks';
 type Modal = 'search' | 'userManagement' | 'companyManagement' | 'customerDirectory' | 'auditLog' | 'exportCSV' | 'reminderStatus' | 'taskDetails' | 'messageStatus' | null;
 
 function AppContent() {
@@ -58,7 +59,8 @@ function AppContent() {
     appointment: Appointment | null;
     date: Date | null;
     startTime: string | null;
-  }>({ open: false, appointment: null, date: null, startTime: null });
+    rescheduleMode?: boolean;
+  }>({ open: false, appointment: null, date: null, startTime: null, rescheduleMode: false });
   const [detailsAppointment, setDetailsAppointment] = useState<Appointment | null>(null);
   const [deleteAppointment, setDeleteAppointment] = useState<Appointment | null>(null);
   const [modal, setModal] = useState<Modal>(null);
@@ -204,7 +206,7 @@ function AppContent() {
   }
 
   function handleSlotClick(date: Date, startTime: string) {
-    setFormState({ open: true, appointment: null, date, startTime });
+    setFormState({ open: true, appointment: null, date, startTime, rescheduleMode: false });
     setDetailsAppointment(null);
   }
 
@@ -219,6 +221,21 @@ function AppContent() {
         appointment: detailsAppointment,
         date: parseDateISO(detailsAppointment.appointment_date),
         startTime: detailsAppointment.start_time,
+        rescheduleMode: false,
+      });
+      setDetailsAppointment(null);
+    }
+  }
+
+  function handleRescheduleAppointment(target?: Appointment) {
+    const appt = target || detailsAppointment;
+    if (appt) {
+      setFormState({
+        open: true,
+        appointment: appt,
+        date: parseDateISO(appt.appointment_date),
+        startTime: appt.start_time,
+        rescheduleMode: true,
       });
       setDetailsAppointment(null);
     }
@@ -240,11 +257,11 @@ function AppContent() {
   }
 
   function handleFormClose() {
-    setFormState({ open: false, appointment: null, date: null, startTime: null });
+    setFormState({ open: false, appointment: null, date: null, startTime: null, rescheduleMode: false });
   }
 
   function handleFormSaved() {
-    setFormState({ open: false, appointment: null, date: null, startTime: null });
+    setFormState({ open: false, appointment: null, date: null, startTime: null, rescheduleMode: false });
     setDataVersion(v => v + 1);
   }
 
@@ -265,6 +282,8 @@ function AppContent() {
       )}
 
       <AppHeader
+        activeView={view}
+        onSelectView={(nextView) => setView(nextView)}
         onOpenSearch={() => setModal('search')}
         onOpenUserManagement={() => setModal('userManagement')}
         onOpenCompanyManagement={() => setModal('companyManagement')}
@@ -429,6 +448,17 @@ function AppContent() {
         />
       )}
 
+      {view === 'allAppointments' && (
+        <AllAppointmentsView
+          profiles={profiles}
+          companies={companies}
+          dataVersion={dataVersion}
+          onOpenAppointment={handleAppointmentClick}
+          onNewAppointment={() => handleSlotClick(new Date(), '09:00:00')}
+          onStatusUpdated={() => setDataVersion(v => v + 1)}
+        />
+      )}
+
       {formState.open && formState.date && (
         <AppointmentForm
           appointment={formState.appointment}
@@ -437,6 +467,7 @@ function AppContent() {
           profiles={profiles}
           companies={companies}
           typeMappings={typeMappings}
+          rescheduleMode={formState.rescheduleMode}
           onClose={handleFormClose}
           onSaved={handleFormSaved}
         />
@@ -448,8 +479,10 @@ function AppContent() {
           profile={profileMap.get(detailsAppointment.assigned_to)}
           company={detailsAppointment.company_id ? companyMap.get(detailsAppointment.company_id) || null : null}
           onEdit={handleEditAppointment}
+          onReschedule={() => handleRescheduleAppointment(detailsAppointment)}
           onDelete={() => { setDeleteAppointment(detailsAppointment); setDetailsAppointment(null); }}
           onClose={() => setDetailsAppointment(null)}
+          onCustomerLinked={() => setDataVersion(v => v + 1)}
         />
       )}
 
@@ -480,7 +513,15 @@ function AppContent() {
       )}
 
       {modal === 'customerDirectory' && (
-        <CustomerDirectory onClose={() => setModal(null)} onDataChange={() => setDataVersion(v => v + 1)} />
+        <CustomerDirectory
+          onClose={() => setModal(null)}
+          onDataChange={() => setDataVersion(v => v + 1)}
+          onOpenAppointment={(appointment) => {
+            setModal(null);
+            setDetailsAppointment(appointment);
+          }}
+          dataVersion={dataVersion}
+        />
       )}
 
       {modal === 'auditLog' && profile.role === 'admin' && (
