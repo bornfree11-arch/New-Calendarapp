@@ -1,13 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useAuth } from '@/context/AuthContext';
 import { getTasks } from '@/lib/store';
 import { Task, TaskStatus, TASK_STATUSES } from '@/types';
-import { TaskDetailsModal } from '@/components/TaskDetailsModal';
-import { CATEGORY_COLORS, STATUS_COLORS } from '@/components/TaskDetailsModal';
+import { TaskDetailsModal, CATEGORY_COLORS, STATUS_COLORS } from '@/components/TaskDetailsModal';
 import { formatDateLong, parseDateISO, formatDateISO, isEmbedded } from '@/lib/dateUtils';
 import {
   ChevronLeft,
-  LogOut,
   Plus,
   Loader2,
   ListTodo,
@@ -17,13 +14,13 @@ import {
 
 interface TasksScreenProps {
   onBackToCalendar: () => void;
-  onSignOut: () => void;
+  onSignOut?: () => void;
   onOpenFocus: () => void;
 }
 
 type StatusFilter = 'all' | TaskStatus;
 
-export function TasksScreen({ onBackToCalendar, onSignOut, onOpenFocus }: TasksScreenProps) {
+export function TasksScreen({ onBackToCalendar, onOpenFocus }: TasksScreenProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -83,30 +80,23 @@ export function TasksScreen({ onBackToCalendar, onSignOut, onOpenFocus }: TasksS
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-        <div className={`max-w-[900px] mx-auto ${embedded ? 'px-2 h-12' : 'px-4 h-14'} flex items-center justify-between gap-4`}>
-          <button
-            onClick={onBackToCalendar}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">Calendar</span>
-          </button>
-          <h1 className="text-base font-semibold text-slate-800 truncate flex items-center gap-2">
-            <ListTodo className="w-5 h-5 text-teal-600" />
-            Tasks
-          </h1>
-          <button
-            onClick={onSignOut}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition"
-          >
-            <LogOut className="w-4 h-4" />
-            <span className="hidden sm:inline">Log Out</span>
-          </button>
+      <div className={`max-w-[900px] mx-auto ${embedded ? 'px-2 py-3' : 'px-4 py-5'}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onBackToCalendar}
+              className="flex items-center gap-1 px-2.5 py-1.5 text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span className="hidden sm:inline">Calendar</span>
+            </button>
+            <h2 className="text-xl font-semibold text-slate-800 flex items-center gap-2">
+              <ListTodo className="w-5 h-5 text-teal-600" />
+              Tasks
+            </h2>
+          </div>
         </div>
-      </header>
-
-      <div className={`max-w-[900px] mx-auto ${embedded ? 'px-2 py-2' : 'px-4 py-4'}`}>
         {error && (
           <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
             {error}

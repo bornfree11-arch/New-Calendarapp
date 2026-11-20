@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { getProfiles, saveProfile, deleteProfile, getCompanies } from '@/lib/store';
 import { Profile, Company, COLOR_PALETTE, isLightColor } from '@/types';
 import { useAuth } from '@/context/AuthContext';
-import { formatPhoneNumber, isValidPhoneNumber, getInitials } from '@/lib/dateUtils';
+import { formatPhoneNumber, isValidPhoneNumber, isDummyPhoneNumber, getInitials } from '@/lib/dateUtils';
 import { X, UserPlus, Ban, CheckCircle2, Pencil, Loader2, Trash2, Building2 } from 'lucide-react';
 
 interface UserManagementProps {
@@ -247,10 +247,15 @@ function AddUserForm({ activeColors, companies, onClose, onSaved }: {
   const [color, setColor] = useState(COLOR_PALETTE.find(c => !activeColors.has(c.value))?.value || COLOR_PALETTE[0].value);
   const [role, setRole] = useState<'admin' | 'coworker'>('coworker');
   const [defaultCompanyId, setDefaultCompanyId] = useState<string>('');
+  const [notifyDayOfWhatsapp, setNotifyDayOfWhatsapp] = useState(false);
+  const [notify20MinBefore, setNotify20MinBefore] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
   const activeCompanies = companies.filter(c => c.is_active);
+  const whatsappEnabled = notifyDayOfWhatsapp || notify20MinBefore;
+  const hasValidWhatsappPhone = !!phone.trim() && isValidPhoneNumber(phone) && !isDummyPhoneNumber(phone);
+  const showPhoneNotice = whatsappEnabled && !hasValidWhatsappPhone;
 
   const adminClient = createClient(
     import.meta.env.VITE_SUPABASE_URL,
@@ -266,6 +271,10 @@ function AddUserForm({ activeColors, companies, onClose, onSaved }: {
     if (!email.trim()) { setError('Email is required.'); return; }
     if (password.length < 6) { setError('Password must be at least 6 characters.'); return; }
     if (!isValidPhoneNumber(phone)) { setError('Please enter a valid US phone number.'); return; }
+    if (whatsappEnabled && (!phone.trim() || isDummyPhoneNumber(phone))) {
+      setError('A valid, non-placeholder phone number is required when WhatsApp notifications are enabled.');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -287,6 +296,8 @@ function AddUserForm({ activeColors, companies, onClose, onSaved }: {
         role,
         status: 'active',
         default_company_id: defaultCompanyId || null,
+        notify_day_of_whatsapp: notifyDayOfWhatsapp,
+        notify_20min_before: notify20MinBefore,
       }, adminUser?.id || null);
       onSaved();
     } catch (err) {
@@ -362,6 +373,35 @@ function AddUserForm({ activeColors, companies, onClose, onSaved }: {
             </div>
           </div>
 
+          <div className="pt-2 border-t border-slate-200">
+            <label className="block text-sm font-medium text-slate-700 mb-2">Notification Preferences</label>
+            <div className="space-y-2.5">
+              <label className="flex items-start gap-2.5 text-sm text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifyDayOfWhatsapp}
+                  onChange={(e) => setNotifyDayOfWhatsapp(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                />
+                <span>Receive WhatsApp reminder on the morning of the appointment</span>
+              </label>
+              <label className="flex items-start gap-2.5 text-sm text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notify20MinBefore}
+                  onChange={(e) => setNotify20MinBefore(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                />
+                <span>Receive WhatsApp alert 20 minutes before appointment</span>
+              </label>
+            </div>
+            {showPhoneNotice && (
+              <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                A valid phone number is required to receive WhatsApp notifications. Please enter a real US phone number above.
+              </p>
+            )}
+          </div>
+
           {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">{error}</div>}
 
           <div className="flex gap-3 pt-2">
@@ -394,10 +434,15 @@ function EditUserForm({ user, activeColors, companies, currentUserId, onClose, o
   const [color, setColor] = useState(user.calendar_color);
   const [role, setRole] = useState<'admin' | 'coworker'>(user.role);
   const [defaultCompanyId, setDefaultCompanyId] = useState<string>(user.default_company_id || '');
+  const [notifyDayOfWhatsapp, setNotifyDayOfWhatsapp] = useState(Boolean(user.notify_day_of_whatsapp));
+  const [notify20MinBefore, setNotify20MinBefore] = useState(Boolean(user.notify_20min_before));
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
   const availableCompanies = companies.filter(c => c.is_active || c.id === user.default_company_id);
+  const whatsappEnabled = notifyDayOfWhatsapp || notify20MinBefore;
+  const hasValidWhatsappPhone = !!phone.trim() && isValidPhoneNumber(phone) && !isDummyPhoneNumber(phone);
+  const showPhoneNotice = whatsappEnabled && !hasValidWhatsappPhone;
 
   const availableColors = new Set(activeColors);
   availableColors.delete(user.calendar_color);
@@ -408,6 +453,10 @@ function EditUserForm({ user, activeColors, companies, currentUserId, onClose, o
 
     if (!fullName.trim()) { setError('Full name is required.'); return; }
     if (phone && !isValidPhoneNumber(phone)) { setError('Please enter a valid US phone number.'); return; }
+    if (whatsappEnabled && (!phone.trim() || !isValidPhoneNumber(phone) || isDummyPhoneNumber(phone))) {
+      setError('A valid, non-placeholder phone number is required when WhatsApp notifications are enabled.');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -419,6 +468,8 @@ function EditUserForm({ user, activeColors, companies, currentUserId, onClose, o
         calendar_color: color,
         role,
         default_company_id: defaultCompanyId || null,
+        notify_day_of_whatsapp: notifyDayOfWhatsapp,
+        notify_20min_before: notify20MinBefore,
       }, adminUser?.id || null);
       onSaved();
     } catch (err) {
@@ -503,6 +554,35 @@ function EditUserForm({ user, activeColors, companies, currentUserId, onClose, o
                 Administrator
               </label>
             </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-200">
+            <label className="block text-sm font-medium text-slate-700 mb-2">Notification Preferences</label>
+            <div className="space-y-2.5">
+              <label className="flex items-start gap-2.5 text-sm text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifyDayOfWhatsapp}
+                  onChange={(e) => setNotifyDayOfWhatsapp(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                />
+                <span>Receive WhatsApp reminder on the morning of the appointment</span>
+              </label>
+              <label className="flex items-start gap-2.5 text-sm text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notify20MinBefore}
+                  onChange={(e) => setNotify20MinBefore(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                />
+                <span>Receive WhatsApp alert 20 minutes before appointment</span>
+              </label>
+            </div>
+            {showPhoneNotice && (
+              <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                A valid phone number is required to receive WhatsApp notifications. Please enter a real US phone number above.
+              </p>
+            )}
           </div>
 
           {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">{error}</div>}

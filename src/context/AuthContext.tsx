@@ -28,6 +28,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return {
       ...data,
       default_company_id: data.default_company_id ?? null,
+      notify_day_of_whatsapp: Boolean(data.notify_day_of_whatsapp),
+      notify_20min_before: Boolean(data.notify_20min_before),
     };
   }
 

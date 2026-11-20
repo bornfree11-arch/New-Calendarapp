@@ -160,6 +160,8 @@ export async function getProfiles(): Promise<Profile[]> {
   return ((data || []) as Profile[]).map((p) => ({
     ...p,
     default_company_id: p.default_company_id ?? null,
+    notify_day_of_whatsapp: Boolean(p.notify_day_of_whatsapp),
+    notify_20min_before: Boolean(p.notify_20min_before),
   }));
 }
 
@@ -167,6 +169,12 @@ export async function saveProfile(profile: Partial<Profile> & { id?: string }, a
   const normalizedProfile: Partial<Profile> & { id?: string } = { ...profile };
   if ('default_company_id' in normalizedProfile) {
     normalizedProfile.default_company_id = normalizedProfile.default_company_id || null;
+  }
+  if ('notify_day_of_whatsapp' in normalizedProfile) {
+    normalizedProfile.notify_day_of_whatsapp = Boolean(normalizedProfile.notify_day_of_whatsapp);
+  }
+  if ('notify_20min_before' in normalizedProfile) {
+    normalizedProfile.notify_20min_before = Boolean(normalizedProfile.notify_20min_before);
   }
 
   if (normalizedProfile.id) {
@@ -183,7 +191,12 @@ export async function saveProfile(profile: Partial<Profile> & { id?: string }, a
       .select('*')
       .single<Profile>();
     if (error) throw error;
-    const result: Profile = { ...data, default_company_id: data.default_company_id ?? null };
+    const result: Profile = {
+      ...data,
+      default_company_id: data.default_company_id ?? null,
+      notify_day_of_whatsapp: Boolean(data.notify_day_of_whatsapp),
+      notify_20min_before: Boolean(data.notify_20min_before),
+    };
     if (existing) {
       await logAudit('UPDATE', 'profiles', `Updated user "${result.full_name}"`, existing as unknown as Record<string, unknown>, result as unknown as Record<string, unknown>, actorId);
     }
@@ -195,13 +208,20 @@ export async function saveProfile(profile: Partial<Profile> & { id?: string }, a
     .insert({
       ...normalizedProfile,
       default_company_id: normalizedProfile.default_company_id ?? null,
+      notify_day_of_whatsapp: normalizedProfile.notify_day_of_whatsapp ?? false,
+      notify_20min_before: normalizedProfile.notify_20min_before ?? false,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
     .select('*')
     .single<Profile>();
   if (error) throw error;
-  const result: Profile = { ...data, default_company_id: data.default_company_id ?? null };
+  const result: Profile = {
+    ...data,
+    default_company_id: data.default_company_id ?? null,
+    notify_day_of_whatsapp: Boolean(data.notify_day_of_whatsapp),
+    notify_20min_before: Boolean(data.notify_20min_before),
+  };
   await logAudit('INSERT', 'profiles', `Created user "${result.full_name}"`, null, result as unknown as Record<string, unknown>, actorId);
   return result;
 }
@@ -1181,9 +1201,20 @@ export async function saveCustomer(customer: Partial<Customer> & { id?: string }
     return data;
   }
 
+  const assigned_user_id = customer.assigned_user_id !== undefined && customer.assigned_user_id !== ''
+    ? customer.assigned_user_id
+    : actorId;
+
   const { data, error } = await supabase
     .from('customers')
-    .insert({ ...customer, created_by: actorId, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .insert({
+      ...customer,
+      assigned_user_id,
+      preferred_language: customer.preferred_language || 'es',
+      created_by: actorId,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
     .select('*')
     .single<Customer>();
   if (error) throw error;
@@ -1312,7 +1343,7 @@ export async function mergeCustomers(keepId: string, duplicateId: string, actorI
 
   // Fill blank fields on keep from dup
   const updates: Partial<Customer> = {};
-  const blankableFields: (keyof Customer)[] = ['phone', 'email', 'notes', 'address_line1', 'address_line2', 'city', 'state', 'zip_code'];
+  const blankableFields: (keyof Customer)[] = ['phone', 'email', 'notes', 'address_line1', 'address_line2', 'city', 'state', 'zip_code', 'preferred_language'];
   for (const field of blankableFields) {
     const keepVal = keep[field] as string;
     const dupVal = dup[field] as string;
@@ -1682,6 +1713,8 @@ export function detectHeaderMapping(headers: string[]): {
   phone: string;
   type: string;
   email: string;
+  language: string;
+  assignedTo: string;
   isClientNameAutoMatched: boolean;
 } {
   const findMatch = (aliases: string[]) => {
@@ -1700,6 +1733,8 @@ export function detectHeaderMapping(headers: string[]): {
   const phoneAliases = ['phonenumber', 'phone', 'cell', 'cellphone', 'mobile', 'mobilephone', 'telephone', 'tel', 'homephone', 'workphone'];
   const typeAliases = ['type', 'role', 'contacttype', 'relationship', 'clienttype', 'tag', 'tags', 'category'];
   const emailAliases = ['email', 'emailaddress', 'primaryemail'];
+  const langAliases = ['language', 'preferredlanguage', 'lang', 'idioma', 'preferredlang'];
+  const assignedAliases = ['assignedto', 'assigneduser', 'employee', 'assigned', 'agent', 'staff'];
 
   const clientName = findMatch(nameAliases);
   const birthDate = findMatch(dobAliases);
@@ -1707,6 +1742,8 @@ export function detectHeaderMapping(headers: string[]): {
   const phone = findMatch(phoneAliases);
   const type = findMatch(typeAliases);
   const email = findMatch(emailAliases);
+  const language = findMatch(langAliases);
+  const assignedTo = findMatch(assignedAliases);
 
   return {
     clientName,
@@ -1715,6 +1752,8 @@ export function detectHeaderMapping(headers: string[]): {
     phone,
     type,
     email,
+    language,
+    assignedTo,
     isClientNameAutoMatched: Boolean(clientName),
   };
 }
@@ -1923,6 +1962,14 @@ export function parseCsvPhone(raw: string): { phone: string; send_whatsapp: bool
   };
 }
 
+export function normalizePreferredLanguage(raw?: string | null): 'es' | 'en' {
+  const cleaned = (raw || '').trim().toLowerCase();
+  if (!cleaned) return 'es';
+  if (cleaned === 'en' || cleaned === 'english') return 'en';
+  if (cleaned === 'es' || cleaned === 'spanish' || cleaned === 'español' || cleaned === 'espanol') return 'es';
+  return 'es';
+}
+
 export interface CsvCustomerInsertRow {
   full_name: string;
   phone: string;
@@ -1940,6 +1987,7 @@ export interface CsvCustomerInsertRow {
   zip_code: string;
   date_of_birth: string | null;
   role: CustomerRole;
+  preferred_language: 'es' | 'en';
 }
 
 export interface CsvCustomerUpdateRow {
@@ -1956,6 +2004,8 @@ export interface CsvCustomerUpdateRow {
   role: CustomerRole;
   tags: string[];
   send_whatsapp: boolean;
+  assigned_user_id: string | null;
+  preferred_language: 'es' | 'en';
 }
 
 export interface CsvImportPreview {
@@ -1974,6 +2024,8 @@ export function buildCsvImportPreview(params: {
   onlyWithValidEmail: boolean;
   targetCompanyId: string | null;
   isGlobal: boolean;
+  profiles?: Profile[];
+  currentUserId?: string | null;
   columnMapping?: {
     clientName?: string;
     birthDate?: string;
@@ -1981,9 +2033,11 @@ export function buildCsvImportPreview(params: {
     phone?: string;
     type?: string;
     email?: string;
+    language?: string;
+    assignedTo?: string;
   };
 }): CsvImportPreview {
-  const { rows, existingCustomers, onlyWithValidEmail, targetCompanyId, isGlobal, columnMapping } = params;
+  const { rows, existingCustomers, onlyWithValidEmail, targetCompanyId, isGlobal, profiles = [], currentUserId = null, columnMapping } = params;
 
   const getCol = (row: Record<string, string>, aliases: string[], mappedKey?: string) => {
     if (mappedKey && row[mappedKey] !== undefined && row[mappedKey] !== null && String(row[mappedKey]).trim() !== '') {
@@ -2078,6 +2132,31 @@ export function buildCsvImportPreview(params: {
     ], columnMapping?.type);
     const role = normalizeCustomerRole(rawType);
 
+    const rawLang = getCol(row, ['language', 'preferredlanguage', 'lang', 'idioma', 'preferredlang'], columnMapping?.language);
+    const preferred_language = normalizePreferredLanguage(rawLang);
+
+    const rawAssigned = getCol(row, [
+      'assignedto',
+      'assigneduser',
+      'employee',
+      'assigned',
+      'agent',
+      'staff',
+    ], columnMapping?.assignedTo);
+
+    let assignedUserId: string | null = null;
+    if (rawAssigned) {
+      const trimmed = rawAssigned.trim().toLowerCase();
+      const matchedProfile = profiles.find(p =>
+        p.id === rawAssigned ||
+        p.full_name.toLowerCase() === trimmed ||
+        (p.email && p.email.toLowerCase() === trimmed)
+      );
+      if (matchedProfile) {
+        assignedUserId = matchedProfile.id;
+      }
+    }
+
     const rawBirthDate = getCol(row, [
       'birthdate',
       'dob',
@@ -2129,6 +2208,8 @@ export function buildCsvImportPreview(params: {
         role,
         tags: updatedTags,
         send_whatsapp,
+        assigned_user_id: assignedUserId || existingMatch.assigned_user_id || currentUserId || null,
+        preferred_language: preferred_language || (existingMatch as Customer).preferred_language || 'es',
       });
     } else {
       readyToImport.push({
@@ -2138,7 +2219,7 @@ export function buildCsvImportPreview(params: {
         notes: '',
         tags: [role],
         company_id: isGlobal ? null : (targetCompanyId || null),
-        assigned_user_id: null,
+        assigned_user_id: assignedUserId || currentUserId || null,
         is_global: isGlobal,
         send_whatsapp,
         address_line1,
@@ -2148,6 +2229,7 @@ export function buildCsvImportPreview(params: {
         zip_code,
         date_of_birth,
         role,
+        preferred_language,
       });
     }
   }
@@ -2181,7 +2263,7 @@ export async function batchImportCustomers(
       notes: row.notes,
       tags: row.tags,
       company_id: row.company_id,
-      assigned_user_id: row.assigned_user_id,
+      assigned_user_id: row.assigned_user_id || actorId,
       is_global: row.is_global,
       send_whatsapp: row.send_whatsapp,
       address_line1: row.address_line1,
@@ -2190,6 +2272,7 @@ export async function batchImportCustomers(
       state: row.state,
       zip_code: row.zip_code,
       date_of_birth: row.date_of_birth,
+      preferred_language: row.preferred_language || 'es',
       created_by: actorId,
       created_at: now,
       updated_at: now,
@@ -2230,6 +2313,8 @@ export async function batchImportCustomers(
         zip_code: upRow.zip_code,
         tags: upRow.tags,
         send_whatsapp: upRow.send_whatsapp,
+        ...(upRow.assigned_user_id !== undefined ? { assigned_user_id: upRow.assigned_user_id } : {}),
+        preferred_language: upRow.preferred_language || 'es',
         updated_at: now,
       };
 

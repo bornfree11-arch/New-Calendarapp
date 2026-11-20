@@ -8,6 +8,7 @@ import {
   addDays,
   parseDateISO,
   isEmbedded,
+  isToday,
 } from '@/lib/dateUtils';
 import { ColorLegend } from '@/components/ColorLegend';
 import { CATEGORY_COLORS, STATUS_COLORS } from '@/components/TaskDetailsModal';
@@ -25,6 +26,7 @@ interface DailyViewProps {
   onBackToMonthly: () => void;
   onPrevDay: () => void;
   onNextDay: () => void;
+  onToday: () => void;
   onSlotClick: (date: Date, startTime: string) => void;
   onAppointmentClick: (appointment: Appointment) => void;
   onTaskClick: (taskId: string) => void;
@@ -47,6 +49,7 @@ export function DailyView({
   onBackToMonthly,
   onPrevDay,
   onNextDay,
+  onToday,
   onSlotClick,
   onAppointmentClick,
   onTaskClick,
@@ -184,34 +187,44 @@ export function DailyView({
   }
 
   const embedded = isEmbedded();
+  const viewingToday = isToday(date);
+
+  function handleTodayClick() {
+    if (viewingToday) return;
+    onToday();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="sticky top-14 z-10 bg-slate-50/95 backdrop-blur-sm border-b border-slate-200">
         <div className={`max-w-[1200px] mx-auto ${embedded ? 'px-2 py-2' : 'px-4 py-3'}`}>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             {/* Far Left: Monthly navigation link */}
-            <div className="flex-1 flex justify-start">
+            <div className="shrink-0 sm:flex-1 flex justify-start">
               <button
+                type="button"
                 onClick={onBackToMonthly}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-teal-600 hover:bg-teal-50 rounded-lg transition"
+                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-sm font-medium text-teal-600 hover:bg-teal-50 rounded-lg transition"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span className="hidden sm:inline">Monthly</span>
               </button>
             </div>
 
-            {/* Center: Previous Day, Date block & subtitle, Next Day */}
-            <div className="flex items-center justify-center gap-2 sm:gap-3 lg:gap-4 shrink-0">
+            {/* Center: Previous Day, Date block & subtitle, Next Day, Today */}
+            <div className="flex items-center justify-center gap-1.5 sm:gap-3 lg:gap-4 min-w-0">
               <button
+                type="button"
                 onClick={onPrevDay}
-                className="flex items-center gap-1.5 px-3 sm:px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
+                aria-label="Previous Day"
+                className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm shrink-0"
               >
                 <ChevronLeft className="w-4 h-4" />
-                <span className="hidden sm:inline">Previous Day</span>
+                <span className="hidden md:inline">Previous Day</span>
               </button>
-              <div className="text-center min-w-0">
-                <div className="text-sm sm:text-base md:text-lg font-semibold text-slate-800">
+              <div className="text-center min-w-0 px-1">
+                <div className="text-sm sm:text-base md:text-lg font-semibold text-slate-800 leading-tight">
                   {date.toLocaleDateString('en-US', {
                     weekday: 'long',
                     month: 'long',
@@ -224,16 +237,32 @@ export function DailyView({
                 </div>
               </div>
               <button
+                type="button"
                 onClick={onNextDay}
-                className="flex items-center gap-1.5 px-3 sm:px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
+                aria-label="Next Day"
+                className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm shrink-0"
               >
-                <span className="hidden sm:inline">Next Day</span>
+                <span className="hidden md:inline">Next Day</span>
                 <ChevronRight className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleTodayClick}
+                disabled={viewingToday}
+                aria-current={viewingToday ? 'date' : undefined}
+                title={viewingToday ? 'Currently viewing today' : 'Jump to today'}
+                className={`px-3 sm:px-3.5 py-2 text-xs sm:text-sm font-medium rounded-lg border transition shrink-0 ${
+                  viewingToday
+                    ? 'bg-teal-50 text-teal-700 border-teal-200 opacity-75 cursor-default'
+                    : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-50 hover:border-teal-300 shadow-sm cursor-pointer'
+                }`}
+              >
+                Today
               </button>
             </div>
 
             {/* Far Right: Balancing spacer for true centering */}
-            <div className="flex-1 flex justify-end pointer-events-none" aria-hidden="true" />
+            <div className="hidden sm:flex sm:flex-1 justify-end pointer-events-none" aria-hidden="true" />
           </div>
         </div>
       </div>

@@ -11,6 +11,8 @@ export interface Profile {
   role: UserRole;
   status: UserStatus;
   default_company_id: string | null;
+  notify_day_of_whatsapp: boolean;
+  notify_20min_before: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -100,6 +102,7 @@ export interface Customer {
   state: string;
   zip_code: string;
   date_of_birth: string | null;
+  preferred_language?: 'es' | 'en';
   created_by: string | null;
   created_at: string;
   updated_at: string;

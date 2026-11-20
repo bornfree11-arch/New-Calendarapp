@@ -59,13 +59,16 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('company_and_global');
   const [filterEmployeeId, setFilterEmployeeId] = useState<string>('');
+  const [languageFilter, setLanguageFilter] = useState<'all' | 'es' | 'en'>('all');
+  const [roleFilter, setRoleFilter] = useState<'all' | 'Taxpayer' | 'Spouse' | 'Dependent'>('all');
+  const [sortMode, setSortMode] = useState<'name' | 'birthday'>('name');
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [reassigningId, setReassigningId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importSummary, setImportSummary] = useState<{ created: number; linked: number; skipped: number } | null>(null);
-  const [csvImportSummary, setCsvImportSummary] = useState<{ inserted: number; failed: number } | null>(null);
+  const [csvImportSummary, setCsvImportSummary] = useState<{ inserted: number; updated: number; failed: number } | null>(null);
   const [showCsvImportModal, setShowCsvImportModal] = useState(false);
   const [showResendSyncModal, setShowResendSyncModal] = useState(false);
   const [mergingCustomerId, setMergingCustomerId] = useState<string | null>(null);
@@ -240,8 +243,79 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
       if (!c.is_global && c.company_id !== null) return false;
     }
     if (filterEmployeeId && c.assigned_user_id !== filterEmployeeId) return false;
+
+    if (languageFilter !== 'all') {
+      const lang = (c.preferred_language || 'es').toLowerCase();
+      if (lang !== languageFilter) return false;
+    }
+
+    if (roleFilter !== 'all') {
+      const r = getCustomerRole(c.tags);
+      if (r.toLowerCase() !== roleFilter.toLowerCase()) return false;
+    }
+
     return true;
   });
+
+  const isFiltered = Boolean(
+    searchQuery.trim() ||
+    filterEmployeeId ||
+    scopeFilter !== 'company_and_global' ||
+    languageFilter !== 'all' ||
+    roleFilter !== 'all'
+  );
+
+  function handleClearFilters() {
+    setSearchQuery('');
+    setFilterEmployeeId('');
+    setScopeFilter('company_and_global');
+    setLanguageFilter('all');
+    setRoleFilter('all');
+  }
+
+  function getBirthdayDaysAway(dobStr: string | null): number {
+    if (!dobStr) return Infinity;
+    const parts = dobStr.split('-');
+    if (parts.length < 3) return Infinity;
+    const month = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    if (Number.isNaN(month) || Number.isNaN(day)) return Infinity;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let target = new Date(today.getFullYear(), month, day);
+    target.setHours(0, 0, 0, 0);
+
+    if (target < today) {
+      target = new Date(today.getFullYear() + 1, month, day);
+      target.setHours(0, 0, 0, 0);
+    }
+
+    const diffTime = target.getTime() - today.getTime();
+    return Math.round(diffTime / (1000 * 60 * 60 * 24));
+  }
+
+  function getBirthdayCountdownLabel(days: number): string {
+    if (days === 0) return 'Today!';
+    if (days === 1) return 'Tomorrow';
+    return `In ${days} days`;
+  }
+
+  const filteredAndSortedCustomers = useMemo(() => {
+    const list = [...filteredCustomers];
+    if (sortMode === 'birthday') {
+      list.sort((a, b) => {
+        const daysA = getBirthdayDaysAway(a.date_of_birth);
+        const daysB = getBirthdayDaysAway(b.date_of_birth);
+        if (daysA !== daysB) return daysA - daysB;
+        return a.full_name.localeCompare(b.full_name);
+      });
+    } else {
+      list.sort((a, b) => a.full_name.localeCompare(b.full_name));
+    }
+    return list;
+  }, [filteredCustomers, sortMode]);
 
   const scopeIndicatorText = (() => {
     if (scopeFilter === 'global_only') return 'Showing: Global Only';
@@ -257,9 +331,12 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
     <div className="fixed inset-0 bg-black/40 z-50 flex items-start justify-center p-4 pt-10 overflow-y-auto">
       <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full my-4 max-h-[90vh] flex flex-col">
         <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-b border-slate-200">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Users className="w-5 h-5 text-teal-600" />
             <h2 className="text-lg font-semibold text-slate-800">Customer Directory</h2>
+            <span className="text-xs font-medium px-2.5 py-0.5 bg-slate-100 text-slate-700 rounded-full border border-slate-200">
+              {isFiltered ? `Showing ${filteredAndSortedCustomers.length} of ${customers.length} customers` : `${customers.length} customers`}
+            </span>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <button
@@ -311,7 +388,7 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
               className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
             />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Active Company</label>
               <select
@@ -341,53 +418,103 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Language</label>
+              <select
+                value={languageFilter}
+                onChange={(e) => setLanguageFilter(e.target.value as 'all' | 'es' | 'en')}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none bg-white"
+              >
+                <option value="all">All</option>
+                <option value="es">ES</option>
+                <option value="en">EN</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Contact Role</label>
+              <select
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value as 'all' | 'Taxpayer' | 'Spouse' | 'Dependent')}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none bg-white"
+              >
+                <option value="all">All</option>
+                <option value="Taxpayer">Taxpayer</option>
+                <option value="Spouse">Spouse</option>
+                <option value="Dependent">Dependent</option>
+              </select>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-teal-50 text-teal-800 border border-teal-200">
-              {scopeFilter === 'global_only' ? (
-                <Globe className="w-3.5 h-3.5 text-blue-600" />
-              ) : (
-                <Building2 className="w-3.5 h-3.5 text-teal-600" />
-              )}
-              {scopeIndicatorText}
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-teal-50 text-teal-800 border border-teal-200">
+                {scopeFilter === 'global_only' ? (
+                  <Globe className="w-3.5 h-3.5 text-blue-600" />
+                ) : (
+                  <Building2 className="w-3.5 h-3.5 text-teal-600" />
+                )}
+                {scopeIndicatorText}
+              </span>
 
-            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setScopeFilter('company_and_global')}
-                className={`px-2.5 py-1 rounded-md transition ${
-                  scopeFilter === 'company_and_global'
-                    ? 'bg-white text-teal-700 font-medium shadow-sm'
-                    : 'text-slate-600 hover:text-slate-800'
-                }`}
-              >
-                Company + Global
-              </button>
-              <button
-                type="button"
-                onClick={() => setScopeFilter('company_only')}
-                disabled={!selectedCompanyId}
-                className={`px-2.5 py-1 rounded-md transition disabled:opacity-40 ${
-                  scopeFilter === 'company_only'
-                    ? 'bg-white text-teal-700 font-medium shadow-sm'
-                    : 'text-slate-600 hover:text-slate-800'
-                }`}
-              >
-                Company Only
-              </button>
-              <button
-                type="button"
-                onClick={() => setScopeFilter('global_only')}
-                className={`px-2.5 py-1 rounded-md transition ${
-                  scopeFilter === 'global_only'
-                    ? 'bg-white text-teal-700 font-medium shadow-sm'
-                    : 'text-slate-600 hover:text-slate-800'
-                }`}
-              >
-                Global Only
-              </button>
+              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setScopeFilter('company_and_global')}
+                  className={`px-2.5 py-1 rounded-md transition ${
+                    scopeFilter === 'company_and_global'
+                      ? 'bg-white text-teal-700 font-medium shadow-sm'
+                      : 'text-slate-600 hover:text-slate-800'
+                  }`}
+                >
+                  Company + Global
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScopeFilter('company_only')}
+                  disabled={!selectedCompanyId}
+                  className={`px-2.5 py-1 rounded-md transition disabled:opacity-40 ${
+                    scopeFilter === 'company_only'
+                      ? 'bg-white text-teal-700 font-medium shadow-sm'
+                      : 'text-slate-600 hover:text-slate-800'
+                  }`}
+                >
+                  Company Only
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScopeFilter('global_only')}
+                  className={`px-2.5 py-1 rounded-md transition ${
+                    scopeFilter === 'global_only'
+                      ? 'bg-white text-teal-700 font-medium shadow-sm'
+                      : 'text-slate-600 hover:text-slate-800'
+                  }`}
+                >
+                  Global Only
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-slate-500 font-medium">Sort:</span>
+                <select
+                  value={sortMode}
+                  onChange={(e) => setSortMode(e.target.value as 'name' | 'birthday')}
+                  className="px-2 py-1 border border-slate-200 rounded-md text-xs bg-white text-slate-700 font-medium outline-none focus:ring-1 focus:ring-teal-500"
+                >
+                  <option value="name">Name (A–Z)</option>
+                  <option value="birthday">Upcoming Birthday</option>
+                </select>
+              </div>
+              {isFiltered && (
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="text-xs text-teal-700 hover:text-teal-800 font-medium underline px-2 py-1"
+                >
+                  Clear filters
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -406,7 +533,7 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
         {csvImportSummary && (
           <div className="mx-6 mt-4 text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 flex items-start justify-between gap-3">
             <div>
-              <strong>CSV Import complete.</strong> Imported {csvImportSummary.inserted} customer{csvImportSummary.inserted !== 1 ? 's' : ''}{csvImportSummary.failed > 0 ? ` (${csvImportSummary.failed} failed to insert)` : ''}.
+              <strong>CSV Import complete.</strong> New: {csvImportSummary.inserted}, Updated: {csvImportSummary.updated}{csvImportSummary.failed > 0 ? ` (${csvImportSummary.failed} failed)` : ''}.
             </div>
             <button onClick={() => setCsvImportSummary(null)} className="text-emerald-600 hover:text-emerald-800 shrink-0">
               <X className="w-4 h-4" />
@@ -426,15 +553,15 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
               <Loader2 className="w-5 h-5 animate-spin" />
               Loading...
             </div>
-          ) : filteredCustomers.length === 0 ? (
+          ) : filteredAndSortedCustomers.length === 0 ? (
             <div className="text-center py-8 text-slate-400 text-sm border border-dashed border-slate-200 rounded-lg">
-              {searchQuery || filterEmployeeId || scopeFilter !== 'company_and_global'
+              {isFiltered
                 ? 'No customers match your filters.'
                 : 'No customers for this company yet. Click "Add Customer" to create one.'}
             </div>
           ) : (
             <div className="space-y-2">
-              {filteredCustomers.map(customer => (
+              {filteredAndSortedCustomers.map(customer => (
                 <div
                   key={customer.id}
                   className="flex items-start gap-3 px-4 py-3 rounded-lg border border-slate-100 bg-white hover:border-slate-200 transition"
@@ -445,6 +572,9 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-slate-800 text-sm">{customer.full_name}</span>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-xs font-medium bg-slate-100 text-slate-700 border-slate-200">
+                        {(customer.preferred_language || 'es').toUpperCase()}
+                      </span>
                       {(() => {
                         const role = getCustomerRole(customer.tags);
                         return (
@@ -467,6 +597,16 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
                         <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full font-medium">
                           <Cake className="w-3 h-3" />
                           {formatBirthDateDisplay(customer.date_of_birth)}
+                          {sortMode === 'birthday' && (() => {
+                            const days = getBirthdayDaysAway(customer.date_of_birth);
+                            if (days === Infinity) return null;
+                            const lbl = getBirthdayCountdownLabel(days);
+                            return (
+                              <span className="ml-1 px-1.5 py-0.2 bg-purple-200 text-purple-900 rounded text-[10px] font-bold">
+                                {lbl}
+                              </span>
+                            );
+                          })()}
                         </span>
                       )}
                     </div>
@@ -599,6 +739,8 @@ export function CustomerDirectory({ onClose, onDataChange, onOpenAppointment, da
         <CsvImportModal
           selectedCompanyId={selectedCompanyId}
           companies={companies}
+          profiles={profiles}
+          currentUser={currentUser}
           onClose={() => setShowCsvImportModal(false)}
           onImported={(result) => {
             setShowCsvImportModal(false);
@@ -721,10 +863,13 @@ function CustomerForm({ customer, selectedCompanyId, companies, profiles, onClos
   const [email, setEmail] = useState(customer?.email || '');
   const [notes, setNotes] = useState(customer?.notes || '');
   const [companyId, setCompanyId] = useState<string>(customer?.company_id || selectedCompanyId || '');
-  const [assignedUserId, setAssignedUserId] = useState<string>(customer?.assigned_user_id || '');
+  const [assignedUserId, setAssignedUserId] = useState<string>(
+    customer?.assigned_user_id || (customer ? '' : currentUser?.id || '')
+  );
   const [isGlobal, setIsGlobal] = useState(customer ? (customer.is_global || customer.company_id === null) : false);
   const [sendWhatsapp, setSendWhatsapp] = useState(customer?.send_whatsapp ?? true);
   const [role, setRole] = useState<CustomerRole>(getCustomerRole(customer?.tags));
+  const [preferredLanguage, setPreferredLanguage] = useState<'es' | 'en'>(customer?.preferred_language || 'es');
   const [dateOfBirth, setDateOfBirth] = useState<string>(customer?.date_of_birth || '');
   const [addressLine1, setAddressLine1] = useState(customer?.address_line1 || '');
   const [addressLine2, setAddressLine2] = useState(customer?.address_line2 || '');
@@ -776,6 +921,7 @@ function CustomerForm({ customer, selectedCompanyId, companies, profiles, onClos
         state: stateVal || '',
         zip_code: zipCode || '',
         date_of_birth: dateOfBirth || null,
+        preferred_language: preferredLanguage,
       }, currentUser?.id || null);
       onSaved();
     } catch (err) {
@@ -848,6 +994,17 @@ function CustomerForm({ customer, selectedCompanyId, companies, profiles, onClos
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none"
               />
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Preferred Language</label>
+            <select
+              value={preferredLanguage}
+              onChange={(e) => setPreferredLanguage(e.target.value as 'es' | 'en')}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none bg-white"
+            >
+              <option value="es">ES - Spanish</option>
+              <option value="en">EN - English</option>
+            </select>
           </div>
 
           <div className="border-t border-slate-100 pt-3">
@@ -980,13 +1137,14 @@ function CustomerForm({ customer, selectedCompanyId, companies, profiles, onClos
   );
 }
 
-function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
+function CsvImportModal({ selectedCompanyId, companies, profiles, currentUser, onClose, onImported }: {
   selectedCompanyId: string;
   companies: Company[];
+  profiles: Profile[];
+  currentUser: Profile | null;
   onClose: () => void;
-  onImported: (result: { inserted: number; failed: number }) => void;
+  onImported: (result: { inserted: number; updated: number; failed: number }) => void;
 }) {
-  const { profile: currentUser } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [columnMapping, setColumnMapping] = useState<{
@@ -996,6 +1154,8 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
     phone: string;
     type: string;
     email: string;
+    language: string;
+    assignedTo: string;
   }>({
     clientName: '',
     birthDate: '',
@@ -1003,6 +1163,8 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
     phone: '',
     type: '',
     email: '',
+    language: '',
+    assignedTo: '',
   });
 
   const [targetCompanyId, setTargetCompanyId] = useState<string>(selectedCompanyId || '');
@@ -1018,7 +1180,6 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
   const availableCompanies = companies.filter(c => c.is_active || c.id === selectedCompanyId);
   const hasValidTarget = importAsGlobal || Boolean(targetCompanyId);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const autoMapping = useMemo(() => detectHeaderMapping(parsedHeaders), [parsedHeaders]);
   const showColumnMappingDropdown = parsedHeaders.length > 0 && !autoMapping.isClientNameAutoMatched;
 
@@ -1032,6 +1193,8 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
           phone: m.phone || autoMapping.phone || '',
           type: m.type || autoMapping.type || '',
           email: m.email || autoMapping.email || '',
+          language: m.language || autoMapping.language || '',
+          assignedTo: m.assignedTo || autoMapping.assignedTo || '',
         }));
       } else {
         setColumnMapping({
@@ -1041,9 +1204,12 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
           phone: autoMapping.phone,
           type: autoMapping.type,
           email: autoMapping.email,
+          language: autoMapping.language,
+          assignedTo: autoMapping.assignedTo,
         });
       }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoMapping]);
 
   useEffect(() => {
@@ -1135,10 +1301,11 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
       onlyWithValidEmail,
       targetCompanyId: importAsGlobal ? null : (targetCompanyId || null),
       isGlobal: importAsGlobal,
+      profiles,
+      currentUserId: currentUser?.id || null,
       columnMapping,
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parsedRows, existingCustomers, onlyWithValidEmail, targetCompanyId, importAsGlobal, columnMapping]);
+  }, [parsedRows, existingCustomers, onlyWithValidEmail, targetCompanyId, importAsGlobal, profiles, currentUser, columnMapping]);
 
   async function handleConfirmImport() {
     if (!hasValidTarget) {
@@ -1153,7 +1320,7 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
     setError('');
     try {
       const result = await batchImportCustomers(preview.readyToImport, preview.readyToUpdate, currentUser?.id || null);
-      onImported({ inserted: result.inserted + result.updated, failed: result.failed });
+      onImported({ inserted: result.inserted, updated: result.updated, failed: result.failed });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to import customers from CSV.');
     } finally {
@@ -1355,11 +1522,11 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5">
-                  <div className="text-xs font-medium text-emerald-700">New to Import</div>
+                  <div className="text-xs font-medium text-emerald-700">New</div>
                   <div className="text-xl font-bold text-emerald-800">{preview.readyToImport.length}</div>
                 </div>
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5">
-                  <div className="text-xs font-medium text-indigo-700">To Update</div>
+                  <div className="text-xs font-medium text-indigo-700">Update</div>
                   <div className="text-xl font-bold text-indigo-800">{preview.readyToUpdate.length}</div>
                 </div>
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
@@ -1390,7 +1557,7 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
               {(preview.readyToImport.length > 0 || preview.readyToUpdate.length > 0) && (
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
                   <div className="bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 border-b border-slate-200 flex items-center justify-between">
-                    <span>Preview (New: {preview.readyToImport.length}, Updates: {preview.readyToUpdate.length})</span>
+                    <span>Preview (New: {preview.readyToImport.length}, Update: {preview.readyToUpdate.length})</span>
                   </div>
                   <div className="divide-y divide-slate-100 max-h-48 overflow-y-auto">
                     {[
@@ -1456,6 +1623,8 @@ function CsvImportModal({ selectedCompanyId, companies, onClose, onImported }: {
 }
 
 const RESEND_AUDIENCE_STORAGE_KEY = 'resend_audience_id';
+const RESEND_SPANISH_SEGMENT_STORAGE_KEY = 'resend_spanish_segment_id';
+const RESEND_ENGLISH_SEGMENT_STORAGE_KEY = 'resend_english_segment_id';
 
 function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
   visibleCustomers: Customer[];
@@ -1464,13 +1633,28 @@ function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
 }) {
   const [audienceId, setAudienceId] = useState<string>(() => {
     try {
-      return localStorage.getItem(RESEND_AUDIENCE_STORAGE_KEY) || '';
+      return import.meta.env.VITE_RESEND_AUDIENCE_ID || localStorage.getItem(RESEND_AUDIENCE_STORAGE_KEY) || '';
     } catch {
-      return '';
+      return import.meta.env.VITE_RESEND_AUDIENCE_ID || '';
+    }
+  });
+  const [spanishSegmentId, setSpanishSegmentId] = useState<string>(() => {
+    try {
+      return import.meta.env.VITE_RESEND_SEGMENT_SPANISH_ID || localStorage.getItem(RESEND_SPANISH_SEGMENT_STORAGE_KEY) || '';
+    } catch {
+      return import.meta.env.VITE_RESEND_SEGMENT_SPANISH_ID || '';
+    }
+  });
+  const [englishSegmentId, setEnglishSegmentId] = useState<string>(() => {
+    try {
+      return import.meta.env.VITE_RESEND_SEGMENT_ENGLISH_ID || localStorage.getItem(RESEND_ENGLISH_SEGMENT_STORAGE_KEY) || '';
+    } catch {
+      return import.meta.env.VITE_RESEND_SEGMENT_ENGLISH_ID || '';
     }
   });
   const [roleFilter, setRoleFilter] = useState<'all' | 'taxpayers_and_spouses'>('all');
   const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState('');
   const [error, setError] = useState('');
   const [syncResult, setSyncResult] = useState<{ sent: number; detail: string } | null>(null);
 
@@ -1499,6 +1683,7 @@ function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
         last_name,
         full_name: (c.full_name || '').trim(),
         role: getCustomerRole(c.tags),
+        preferred_language: c.preferred_language || 'es',
         unsubscribed: false,
       };
     });
@@ -1513,12 +1698,33 @@ function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
     }
   }
 
+  function handleSpanishSegmentChange(val: string) {
+    setSpanishSegmentId(val);
+    try {
+      localStorage.setItem(RESEND_SPANISH_SEGMENT_STORAGE_KEY, val);
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  function handleEnglishSegmentChange(val: string) {
+    setEnglishSegmentId(val);
+    try {
+      localStorage.setItem(RESEND_ENGLISH_SEGMENT_STORAGE_KEY, val);
+    } catch {
+      // ignore storage errors
+    }
+  }
+
   async function handleSync(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     setSyncResult(null);
 
     const trimmedAudienceId = audienceId.trim();
+    const trimmedSpanishId = spanishSegmentId.trim();
+    const trimmedEnglishId = englishSegmentId.trim();
+
     if (!trimmedAudienceId) {
       setError('Please enter your Resend Audience ID.');
       return;
@@ -1530,45 +1736,80 @@ function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
 
     try {
       localStorage.setItem(RESEND_AUDIENCE_STORAGE_KEY, trimmedAudienceId);
+      if (trimmedSpanishId) localStorage.setItem(RESEND_SPANISH_SEGMENT_STORAGE_KEY, trimmedSpanishId);
+      if (trimmedEnglishId) localStorage.setItem(RESEND_ENGLISH_SEGMENT_STORAGE_KEY, trimmedEnglishId);
     } catch {
       // ignore storage errors
     }
 
     setSyncing(true);
     try {
-      const { data, error: fnError } = await supabase.functions.invoke('sync-resend-contacts', {
-        body: {
-          audienceId: trimmedAudienceId,
-          contacts: contactsToSync,
-        },
-      });
-      if (fnError) {
-        throw new Error(fnError.message || 'Failed to invoke sync-resend-contacts.');
-      }
-      if (data && typeof data === 'object' && 'error' in data && data.error) {
-        throw new Error(String(data.error));
-      }
-      if (data && typeof data === 'object' && 'errors' in data && Array.isArray(data.errors) && data.errors.length > 0 && (!('synced' in data) || data.synced === 0)) {
-        throw new Error(String(data.errors));
+      const CHUNK_SIZE = 20;
+      const totalContacts = contactsToSync.length;
+      const totalBatches = Math.ceil(totalContacts / CHUNK_SIZE);
+
+      let totalSynced = 0;
+      let totalFailed = 0;
+      let totalSpanish = 0;
+      let totalEnglish = 0;
+      const allWarnings: string[] = [];
+      const allErrors: string[] = [];
+
+      for (let i = 0; i < totalBatches; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, totalContacts);
+        const chunk = contactsToSync.slice(start, end);
+
+        setSyncProgress(`Syncing batch ${i + 1} of ${totalBatches} (${end} / ${totalContacts} contacts)...`);
+
+        const { data, error: fnError } = await supabase.functions.invoke('sync-resend-contacts', {
+          body: {
+            audienceId: trimmedAudienceId,
+            spanishSegmentId: trimmedSpanishId,
+            englishSegmentId: trimmedEnglishId,
+            contacts: chunk,
+          },
+        });
+
+        if (fnError) {
+          allErrors.push(fnError.message || `Batch ${i + 1} invocation failed`);
+          continue;
+        }
+        if (data && typeof data === 'object' && 'error' in data && data.error) {
+          allErrors.push(String(data.error));
+          continue;
+        }
+
+        if (data && typeof data === 'object') {
+          if ('synced' in data && typeof data.synced === 'number') totalSynced += data.synced;
+          if ('failed' in data && typeof data.failed === 'number') totalFailed += data.failed;
+          if ('spanishCount' in data && typeof data.spanishCount === 'number') totalSpanish += data.spanishCount;
+          if ('englishCount' in data && typeof data.englishCount === 'number') totalEnglish += data.englishCount;
+          if ('warnings' in data && Array.isArray(data.warnings)) allWarnings.push(...data.warnings);
+          if ('errors' in data && Array.isArray(data.errors)) allErrors.push(...data.errors);
+        }
       }
 
-      const syncedCount =
-        data && typeof data === 'object' && 'synced' in data && typeof data.synced === 'number'
-          ? data.synced
-          : contactsToSync.length;
-      const failedCount =
-        data && typeof data === 'object' && 'failed' in data && typeof data.failed === 'number'
-          ? data.failed
-          : 0;
+      let detail = `Synced ${totalSynced} contact${totalSynced !== 1 ? 's' : ''} — ${totalSpanish} Spanish, ${totalEnglish} English`;
+      if (totalFailed > 0) {
+        detail += `. ${totalFailed} failed`;
+      }
+      if (allWarnings.length > 0) {
+        detail += `. Warning: ${Array.from(new Set(allWarnings)).join(' ')}`;
+      }
+      if (allErrors.length > 0) {
+        detail += `. Errors: ${allErrors.slice(0, 3).join('; ')}`;
+      }
 
       setSyncResult({
-        sent: contactsToSync.length,
-        detail: `Synced ${syncedCount} contact${syncedCount !== 1 ? 's' : ''} to Resend${failedCount > 0 ? ` (${failedCount} failed)` : ''}.`,
+        sent: totalContacts,
+        detail,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to sync contacts to Resend.');
     } finally {
       setSyncing(false);
+      setSyncProgress('');
     }
   }
 
@@ -1597,7 +1838,7 @@ function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Resend Audience ID *</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Resend General Audience ID *</label>
             <input
               type="text"
               value={audienceId}
@@ -1608,6 +1849,35 @@ function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
             />
             <p className="text-xs text-slate-400 mt-1">Remembered automatically in your browser for future syncs.</p>
           </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Spanish Segment ID</label>
+              <input
+                type="text"
+                value={spanishSegmentId}
+                onChange={(e) => handleSpanishSegmentChange(e.target.value)}
+                placeholder="Optional ID"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">English Segment ID</label>
+              <input
+                type="text"
+                value={englishSegmentId}
+                onChange={(e) => handleEnglishSegmentChange(e.target.value)}
+                placeholder="Optional ID"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none font-mono"
+              />
+            </div>
+          </div>
+
+          {(!spanishSegmentId.trim() || !englishSegmentId.trim()) && (
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <strong>Warning:</strong> {!spanishSegmentId.trim() && !englishSegmentId.trim() ? 'Spanish and English segment IDs are' : !spanishSegmentId.trim() ? 'Spanish segment ID is' : 'English segment ID is'} not configured. Contacts will sync to General audience only.
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Contacts Filter</label>
@@ -1636,6 +1906,13 @@ function ResendSyncModal({ visibleCustomers, scopeLabel, onClose }: {
               </button>
             </div>
           </div>
+
+          {syncing && (
+            <div className="flex items-center gap-2 text-sm text-teal-800 bg-teal-50 border border-teal-200 rounded-lg px-4 py-3">
+              <Loader2 className="w-4 h-4 text-teal-600 animate-spin shrink-0" />
+              <span>{syncProgress || 'Syncing contacts...'}</span>
+            </div>
+          )}
 
           {syncResult && (
             <div className="flex items-start gap-2 text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">

@@ -39,7 +39,9 @@ interface AppointmentRow {
   assigned_to: string;
   customer_id?: string | null;
   company_id?: string | null;
+  status?: string | null;
   send_whatsapp: boolean | null;
+  employee_20min_reminded_at?: string | null;
   company_snapshot: {
     name: string;
     address_line1: string;
@@ -55,6 +57,8 @@ interface ProfileRow {
   full_name: string;
   email: string;
   phone: string | null;
+  notify_day_of_whatsapp?: boolean | null;
+  notify_20min_before?: boolean | null;
 }
 
 function formatTime(timeStr: string): string {
@@ -82,6 +86,36 @@ function formatDateShort(dateStr: string): string {
     month: "short",
     day: "numeric",
   });
+}
+
+function formatDateMMDDYYYY(dateStr: string): string {
+  const parts = (dateStr || "").split("-");
+  if (parts.length === 3) {
+    const [y, mo, d] = parts;
+    return `${mo.padStart(2, "0")}/${d.padStart(2, "0")}/${y}`;
+  }
+  return dateStr;
+}
+
+function getZonedDateAndTime(date: Date, timeZone: string): { dateStr: string; timeStr: string } {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || "00";
+  let hour = get("hour");
+  if (hour === "24") hour = "00";
+  return {
+    dateStr: `${get("year")}-${get("month")}-${get("day")}`,
+    timeStr: `${hour}:${get("minute")}:${get("second")}`,
+  };
 }
 
 // Check if an error string indicates an out-of-funds or registration restriction
@@ -137,6 +171,36 @@ function buildClientSMS(appt: AppointmentRow, profile: ProfileRow) {
     companyAddress,
     callbackNumber,
     appointmentDate: formatDateShort(appt.appointment_date),
+    appointmentTime: formatTime(appt.start_time),
+  };
+}
+
+function buildScheduledWhatsappTemplate(
+  appt: AppointmentRow,
+  profile: ProfileRow,
+  recipientFirstName?: string,
+): ClientSmsTemplateData {
+  const rawName = (recipientFirstName || appt.client_name || "Client").trim();
+  const firstName = rawName.split(/\s+/)[0] || "Client";
+
+  const company = appt.company_snapshot;
+  const companyName = company?.name || "";
+
+  const addressParts = [
+    company?.address_line1,
+    company?.address_line2,
+    [company?.city, company?.state, company?.zip_code].filter(Boolean).join(" "),
+  ].filter(Boolean);
+  const companyAddress = addressParts.join(", ");
+
+  const callbackNumber = profile.phone || company?.phone || "";
+
+  return {
+    firstName,
+    companyName,
+    companyAddress,
+    callbackNumber,
+    appointmentDate: formatDateMMDDYYYY(appt.appointment_date),
     appointmentTime: formatTime(appt.start_time),
   };
 }
@@ -852,7 +916,7 @@ Deno.serve(async (req: Request) => {
       // Fetch coworker profile
       const { data: profile } = await supabase
         .from("profiles")
-        .select("full_name, email, phone")
+        .select("full_name, email, phone, notify_day_of_whatsapp, notify_20min_before")
         .eq("id", appt.assigned_to)
         .maybeSingle<ProfileRow>();
 
@@ -890,6 +954,117 @@ Deno.serve(async (req: Request) => {
             subject,
             body,
           });
+
+          // Customer Morning-Of WhatsApp (non-blocking; never fails email status)
+          try {
+            let customerPhone = appt.client_phone || "";
+            let customerSendWhatsapp = appt.send_whatsapp !== false;
+
+            if (customerId) {
+              const { data: customerRec } = await supabase
+                .from("customers")
+                .select("phone, send_whatsapp")
+                .eq("id", customerId)
+                .maybeSingle<{ phone: string | null; send_whatsapp: boolean | null }>();
+              if (customerRec) {
+                if (customerRec.phone && !isDummyPhoneNumber(customerRec.phone)) {
+                  customerPhone = customerRec.phone;
+                }
+                if (customerRec.send_whatsapp === false) {
+                  customerSendWhatsapp = false;
+                }
+              }
+            }
+
+            if (customerSendWhatsapp && customerPhone && !isDummyPhoneNumber(customerPhone)) {
+              if (!birdApiKey) {
+                console.error(`Skipping morning-of customer WhatsApp for appointment ${appt.id}: BIRD_API_KEY is not configured.`);
+              } else {
+                const waData = buildScheduledWhatsappTemplate(appt, profile, appt.client_name);
+                if (!waData.callbackNumber) {
+                  console.error(`Skipping morning-of customer WhatsApp for appointment ${appt.id}: missing callback number.`);
+                } else {
+                  const waResult = await sendBirdSMS(customerPhone, waData, birdApiKey);
+                  if (waResult.success) {
+                    const originalMessage = `Morning-of WhatsApp reminder to ${appt.client_name} for ${waData.appointmentDate} at ${waData.appointmentTime}`;
+                    await supabase.from("reminder_attempts").insert({
+                      reminder_id: reminder.id,
+                      appointment_id: appt.id,
+                      channel: "sms",
+                      recipient_address: customerPhone,
+                      bird_message_id: waResult.birdMessageId || null,
+                      delivery_status: "pending",
+                      template_slug: "appointment_confirmation",
+                      template_params: {
+                        company_name: waData.companyName,
+                        first_name: waData.firstName,
+                        appointment_date: waData.appointmentDate,
+                        appointment_time: waData.appointmentTime,
+                        company_address: waData.companyAddress,
+                        callback_number: waData.callbackNumber,
+                      },
+                      original_message: originalMessage,
+                      is_retry: false,
+                      parent_attempt_id: null,
+                    });
+                    await insertSentEmail({
+                      customer_id: customerId,
+                      appointment_id: appt.id,
+                      channel: "whatsapp",
+                      recipient_email: appt.client_email || "",
+                      recipient_phone: customerPhone,
+                      recipient_name: appt.client_name,
+                      subject: `WhatsApp Appointment Reminder – ${waData.companyName || appt.client_name}`,
+                      body: originalMessage,
+                    });
+                  } else {
+                    console.error(`Morning-of customer WhatsApp failed for appointment ${appt.id}:`, waResult.error);
+                  }
+                }
+              }
+            }
+          } catch (waErr) {
+            console.error(`Morning-of customer WhatsApp exception for appointment ${appt.id}:`, waErr);
+          }
+        } else if (reminder.recipient_type === "coworker") {
+          // Employee Morning-Of WhatsApp (non-blocking; never fails email status)
+          try {
+            if (profile.notify_day_of_whatsapp === true && profile.phone && !isDummyPhoneNumber(profile.phone)) {
+              if (!birdApiKey) {
+                console.error(`Skipping morning-of employee WhatsApp for appointment ${appt.id}: BIRD_API_KEY is not configured.`);
+              } else {
+                const empWaData = buildScheduledWhatsappTemplate(appt, profile, profile.full_name);
+                const waResult = await sendBirdSMS(profile.phone, empWaData, birdApiKey);
+                if (waResult.success) {
+                  const originalMessage = `Morning-of employee WhatsApp reminder to ${profile.full_name} for ${appt.client_name} on ${empWaData.appointmentDate} at ${empWaData.appointmentTime}`;
+                  await supabase.from("reminder_attempts").insert({
+                    reminder_id: reminder.id,
+                    appointment_id: appt.id,
+                    channel: "sms",
+                    recipient_address: profile.phone,
+                    bird_message_id: waResult.birdMessageId || null,
+                    delivery_status: "pending",
+                    template_slug: "appointment_confirmation",
+                    template_params: {
+                      company_name: empWaData.companyName,
+                      first_name: empWaData.firstName,
+                      appointment_date: empWaData.appointmentDate,
+                      appointment_time: empWaData.appointmentTime,
+                      company_address: empWaData.companyAddress,
+                      callback_number: empWaData.callbackNumber,
+                    },
+                    original_message: originalMessage,
+                    is_retry: false,
+                    parent_attempt_id: null,
+                  });
+                } else {
+                  console.error(`Morning-of employee WhatsApp failed for appointment ${appt.id}:`, waResult.error);
+                }
+              }
+            }
+          } catch (empWaErr) {
+            console.error(`Morning-of employee WhatsApp exception for appointment ${appt.id}:`, empWaErr);
+          }
         }
         results.push({ id: reminder.id, status: "sent" });
       } else {
@@ -913,9 +1088,131 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    return new Response(JSON.stringify({ processed: results.length, results }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // 20-Minute Pre-Appointment Employee WhatsApp Alerts
+    const preApptResults: { appointment_id: string; status: string; error?: string }[] = [];
+    try {
+      let businessTimezone = "America/New_York";
+      const { data: settingsRow } = await supabase
+        .from("app_settings")
+        .select("business_timezone")
+        .eq("id", 1)
+        .maybeSingle<{ business_timezone: string | null }>();
+      if (settingsRow?.business_timezone) {
+        businessTimezone = settingsRow.business_timezone;
+      }
+
+      const nowDate = new Date();
+      const windowEndDate = new Date(nowDate.getTime() + 22 * 60 * 1000);
+      const nowLocal = getZonedDateAndTime(nowDate, businessTimezone);
+      const endLocal = getZonedDateAndTime(windowEndDate, businessTimezone);
+      const candidateDates = nowLocal.dateStr === endLocal.dateStr
+        ? [nowLocal.dateStr]
+        : [nowLocal.dateStr, endLocal.dateStr];
+      const nowKey = `${nowLocal.dateStr}T${nowLocal.timeStr}`;
+      const endKey = `${endLocal.dateStr}T${endLocal.timeStr}`;
+
+      const { data: upcomingAppts, error: upcomingErr } = await supabase
+        .from("appointments")
+        .select("*")
+        .is("employee_20min_reminded_at", null)
+        .in("appointment_date", candidateDates);
+
+      if (upcomingErr) {
+        console.error("Failed to query upcoming appointments for 20-min alert:", upcomingErr.message);
+      } else {
+        for (const appt of (upcomingAppts || []) as AppointmentRow[]) {
+          const normalizedStatus = (appt.status || "").trim().toLowerCase();
+          if (
+            normalizedStatus === "cancelled" ||
+            normalizedStatus === "canceled" ||
+            normalizedStatus === "completed" ||
+            normalizedStatus === "no-show" ||
+            normalizedStatus === "noshow" ||
+            normalizedStatus === "no_show" ||
+            normalizedStatus === "rescheduled"
+          ) {
+            continue;
+          }
+
+          const apptStartTime = appt.start_time.length === 5 ? `${appt.start_time}:00` : appt.start_time;
+          const apptKey = `${appt.appointment_date}T${apptStartTime}`;
+          if (apptKey < nowKey || apptKey > endKey) {
+            continue;
+          }
+
+          const { data: empProfile } = await supabase
+            .from("profiles")
+            .select("full_name, email, phone, notify_day_of_whatsapp, notify_20min_before")
+            .eq("id", appt.assigned_to)
+            .maybeSingle<ProfileRow>();
+
+          if (!empProfile || empProfile.notify_20min_before !== true) {
+            continue;
+          }
+          if (!empProfile.phone || isDummyPhoneNumber(empProfile.phone)) {
+            continue;
+          }
+          if (!birdApiKey) {
+            console.error(`Skipping 20-min employee WhatsApp alert for appointment ${appt.id}: BIRD_API_KEY is not configured.`);
+            continue;
+          }
+
+          // Atomically claim employee_20min_reminded_at so overlapping polls never double-send
+          const remindedAt = new Date().toISOString();
+          const { data: claimed, error: claimErr } = await supabase
+            .from("appointments")
+            .update({ employee_20min_reminded_at: remindedAt })
+            .eq("id", appt.id)
+            .is("employee_20min_reminded_at", null)
+            .select("id")
+            .maybeSingle();
+
+          if (claimErr || !claimed) {
+            if (claimErr) {
+              console.error(`Failed to claim employee_20min_reminded_at for appointment ${appt.id}:`, claimErr.message);
+            }
+            continue;
+          }
+
+          const empWaData = buildScheduledWhatsappTemplate(appt, empProfile, empProfile.full_name);
+          const waResult = await sendBirdSMS(empProfile.phone, empWaData, birdApiKey);
+
+          if (waResult.success) {
+            const originalMessage = `20-min pre-appointment WhatsApp alert to ${empProfile.full_name} for ${appt.client_name} on ${empWaData.appointmentDate} at ${empWaData.appointmentTime}`;
+            await supabase.from("reminder_attempts").insert({
+              appointment_id: appt.id,
+              channel: "sms",
+              recipient_address: empProfile.phone,
+              bird_message_id: waResult.birdMessageId || null,
+              delivery_status: "pending",
+              template_slug: "appointment_confirmation",
+              template_params: {
+                company_name: empWaData.companyName,
+                first_name: empWaData.firstName,
+                appointment_date: empWaData.appointmentDate,
+                appointment_time: empWaData.appointmentTime,
+                company_address: empWaData.companyAddress,
+                callback_number: empWaData.callbackNumber,
+              },
+              original_message: originalMessage,
+              is_retry: false,
+              parent_attempt_id: null,
+            });
+            preApptResults.push({ appointment_id: appt.id, status: "sent" });
+          } else {
+            console.error(`20-min employee WhatsApp alert failed for appointment ${appt.id}:`, waResult.error);
+            preApptResults.push({ appointment_id: appt.id, status: "failed", error: waResult.error });
+          }
+        }
+      }
+    } catch (preApptErr) {
+      console.error("20-min pre-appointment alert check failed:", preApptErr);
+    }
+
+    return new Response(
+      JSON.stringify({ processed: results.length, results, pre_appointment_alerts: preApptResults }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   } catch (err) {
     return new Response(
       JSON.stringify({
